@@ -1,0 +1,854 @@
+<?xml version="1.0" encoding="iso-8859-1"?>
+<!DOCTYPE muclient>
+<muclient>
+<plugin
+   name="ThreeS_Stepper"
+   author="Joakim"
+   id="1f2e3d4c5b6a798887766554"
+   language="Lua"
+   purpose="3Scapes area bot/stepper (port of bot_load/bot_main/bot_step.tin)"
+   date_written="2026-06-09"
+   requires="4.73"
+   version="1.0"
+   save_state="y"
+>
+<description><![CDATA[
+Area stepper. Loads paths/mobs from 3s_areas.lua (same folder as this plugin).
+
+Commands (same as TinTin++):
+  - <area>  or  walker <area>   start botting an area (e.g. "- aegis")
+  ..          resume stepping
+  .stop       stop and save position
+  .pause      pause (keep position)
+  .resume     resume from saved position
+  .dcr        resume after a disconnect
+  .stack <n>  stack up to n mobs on next move
+  killbot     kill the bot completely
+  v on|off    vacuum (auto-loot rooms) on/off
+  pa <name>   add party member (won't count as 'player found')
+  pr <name>   remove party member
+  .set <opt> on|off   options: autokill autoresume hardmode stackit bagit necbagit bardit
+  .areas      list known areas
+  .binfo      this help
+]]>
+</description>
+</plugin>
+
+<triggers>
+  <trigger enabled="y" name="bot_room" regexp="y" match="^=S=(.*)=S=" send_to="12" sequence="20" keep_evaluating="y">
+  <send>bot_on_room("%1")</send>
+  </trigger>
+  <trigger enabled="y" name="bot_mob" regexp="y" match="^(?:=M= |\[MONSTAR!\])(.+)$" send_to="12" sequence="20" keep_evaluating="y">
+  <send>bot_on_mob("%1")</send>
+  </trigger>
+  <trigger enabled="y" name="bot_player" regexp="y" match="^(?:=P= |\[PLAYAR!\])(.+)$" send_to="12" sequence="20" keep_evaluating="y">
+  <send>bot_on_player("%1")</send>
+  </trigger>
+  <trigger enabled="y" name="bot_item" regexp="y" match="^=[AWI]= " send_to="12" sequence="30" keep_evaluating="y">
+  <send>bot_on_item("%0")</send>
+  </trigger>
+  <trigger enabled="y" name="bot_gold" regexp="y" match=" gold coins\.$" send_to="12" sequence="30" keep_evaluating="y">
+  <send>bot_flags.gold = true</send>
+  </trigger>
+  <trigger enabled="y" name="bot_prompt" regexp="y" match="^&gt;\s*$" send_to="12" sequence="50" keep_evaluating="y">
+  <send>bot_on_prompt()</send>
+  </trigger>
+  <trigger enabled="y" name="bot_cannotgo" regexp="y" match="^You cannot go (\w+)\.$" send_to="12" sequence="30" keep_evaluating="y">
+  <send>bot_path_undo()</send>
+  </trigger>
+  <trigger enabled="y" name="bot_wall" regexp="y" match="^You are unable to penetrate the wall that" send_to="12" sequence="30" keep_evaluating="y">
+  <send>bot_path_undo()</send>
+  </trigger>
+  <trigger enabled="y" name="bot_unblock" regexp="y" match="collapses, unblocking the escape routes\." send_to="12" sequence="30" keep_evaluating="y">
+  <send>if bot.active then Send("!glance") end</send>
+  </trigger>
+  <trigger enabled="y" name="bot_nomob" regexp="y" match="^There is no (.+) here\.$" send_to="12" sequence="30" keep_evaluating="y">
+  <send>bot_no_mob_here("%1")</send>
+  </trigger>
+  <trigger enabled="y" name="bot_killblow" regexp="y" match="dealt the killing blow to (.+)\." send_to="12" sequence="42" keep_evaluating="y">
+  <send>bot_on_killblow()</send>
+  </trigger>
+  <trigger enabled="y" name="party_hdr" regexp="y" match="^Name\s+Guild\s+\[" send_to="12" sequence="29" keep_evaluating="y">
+  <send>party_capture_start()</send>
+  </trigger>
+  <trigger enabled="y" name="party_member" regexp="y" match="^\*?([A-Z][a-z]+)\s+\S+\s+\[\s*\d+/\s*\d+\]" send_to="12" sequence="33" keep_evaluating="y">
+  <send>party_capture_member("%1")</send>
+  </trigger>
+  <trigger enabled="y" name="party_end" regexp="y" match="^You have personally earned:" send_to="12" sequence="31" keep_evaluating="y">
+  <send>party_capture_end()</send>
+  </trigger>
+</triggers>
+
+<aliases>
+  <alias match="^(?:\-|walker )\s*(\w+)$" enabled="y" regexp="y" send_to="12" sequence="100"><send>bot_start("%1")</send></alias>
+  <alias match="^\.\.$"        enabled="y" regexp="y" send_to="12" sequence="100"><send>bot_resume_step()</send></alias>
+  <alias match="^\.stop$"      enabled="y" regexp="y" send_to="12" sequence="100"><send>bot_stop()</send></alias>
+  <alias match="^\.pause$"     enabled="y" regexp="y" send_to="12" sequence="100"><send>bot_pause()</send></alias>
+  <alias match="^\.resume$"    enabled="y" regexp="y" send_to="12" sequence="100"><send>bot_resume_saved()</send></alias>
+  <alias match="^\.dcr$"       enabled="y" regexp="y" send_to="12" sequence="100"><send>bot_resume_saved()</send></alias>
+  <alias match="^killbot$"     enabled="y" regexp="y" send_to="12" sequence="100"><send>bot_kill()</send></alias>
+  <alias match="^\.stack (\d+)$" enabled="y" regexp="y" send_to="12" sequence="100"><send>bot.stacknum = %1; Note("Stacking up to %1 mobs on next move")</send></alias>
+  <alias match="^v (on|off)$"  enabled="y" regexp="y" send_to="12" sequence="100"><send>bot.vacuum = ("%1" == "on"); Note("vacuum: %1")</send></alias>
+  <alias match="^pa (.+)$"     enabled="y" regexp="y" send_to="12" sequence="100"><send>bot_party_add("%1")</send></alias>
+  <alias match="^pr (.+)$"     enabled="y" regexp="y" send_to="12" sequence="100"><send>bot_party_remove("%1")</send></alias>
+  <alias match="^\.set (\w+) (on|off)$" enabled="y" regexp="y" send_to="12" sequence="100"><send>bot_set("%1", "%2")</send></alias>
+  <alias match="^\.areas$"     enabled="y" regexp="y" send_to="12" sequence="100"><send>bot_list_areas()</send></alias>
+  <alias match="^\.binfo$"     enabled="y" regexp="y" send_to="12" sequence="100"><send>bot_help()</send></alias>
+  <alias match="^areabot$"    enabled="y" regexp="y" send_to="12" sequence="100"><send>ab_toggle_window()</send></alias>
+  <alias match="^record$"            enabled="y" regexp="y" send_to="12" sequence="90"><send>rec_status()</send></alias>
+  <alias match="^record (?:stop|save)$" enabled="y" regexp="y" send_to="12" sequence="90"><send>rec_save()</send></alias>
+  <alias match="^record cancel$"     enabled="y" regexp="y" send_to="12" sequence="90"><send>rec_cancel()</send></alias>
+  <alias match="^record undo$"       enabled="y" regexp="y" send_to="12" sequence="90"><send>rec_undo()</send></alias>
+  <alias match="^record kill (\w+)$" enabled="y" regexp="y" send_to="12" sequence="90"><send>rec_setkill("%1")</send></alias>
+  <alias match="^record ([A-Za-z_]\w*)$" enabled="y" regexp="y" send_to="12" sequence="95"><send>rec_start("%1")</send></alias>
+  <alias match="^r: (.+)$"           enabled="y" regexp="y" send_to="12" sequence="90"><send>rec_special("%1")</send></alias>
+  <alias match="^deadman$"     enabled="y" regexp="y" send_to="12" sequence="100"><send>dm_toggle_window()</send></alias>
+  <alias match="^deadman (on|off)$" enabled="y" regexp="y" send_to="12" sequence="100"><send>dm_on = ("%1" == "on") SetVariable("dm_on", dm_on and "1" or "0") Note("[deadman] %1") dm_draw()</send></alias>
+  <alias match="^deadman (\d+)$" enabled="y" regexp="y" send_to="12" sequence="100"><send>dm_secs = math.max(60, math.min(7200, %1)) SetVariable("dm_secs", tostring(dm_secs)) Note("[deadman] " .. dm_secs .. "s") dm_draw()</send></alias>
+</aliases>
+
+<script>
+<![CDATA[
+require "movewindow"
+
+-- ====================== state ======================
+areas = {}
+
+bot = {
+  active = false,        -- a stepper is loaded and running
+  area = nil, cfg = nil,
+  path = {}, pos = 1,
+  armed = false,         -- next prompt -> loot + walk
+  mob_pending = nil,     -- mob seen this room, engage on next prompt
+  paused_on_mob = false,
+  foundmob = false,      -- saw a mob this lap (controls looping)
+  lastdir = nil,
+  vacuum = true, stacknum = 0,
+  no_loop = false, no_home = false, hardmode = false,
+  opts = { autokill = false, autoresume = true,
+           stackit = false, bagit = false, necbagit = false, bardit = false },
+}
+bot_flags = { player = false, item = false, gold = false, corpse = false }
+
+party = {}
+local last_input = os.time()
+local CHAOS_ID = "5e6f7a8b9c0d1e2f3a4b5c6d"
+local dm_on = (GetVariable("dm_on") ~= "0")
+local dm_secs = tonumber(GetVariable("dm_secs")) or 600
+local dm_visible = (GetVariable("dm_visible") ~= "0")
+local dm_info
+local rec = nil   -- active path recording: { name=, path={}, mobs={}, kill= }
+
+local REV = { n="s", s="n", e="w", w="e", ne="sw", sw="ne", nw="se", se="nw",
+  u="d", d="u", north="south", south="north", east="west", west="east",
+  northeast="sw", southwest="ne", northwest="se", southeast="nw",
+  up="down", down="up" }
+
+local function note(s)  ColourNote("yellow", "", "[bot] " .. s) end
+local function dnote(s) ColourNote("silver", "", "[bot] " .. s) end
+
+local function save_position()
+  SetVariable("bot_active", bot.active and "1" or "0")
+  SetVariable("save_area", bot.area or "")
+  SetVariable("save_pos", tostring(bot.pos))
+  SetVariable("autokill", bot.opts.autokill and "1" or "0")
+end
+
+local function reset_room_flags()
+  bot_flags.player = false; bot_flags.item = false
+  bot_flags.gold = false;   bot_flags.corpse = false
+end
+
+-- ====================== area data ======================
+local function load_areas()
+  local dir = GetPluginInfo(GetPluginID(), 20)
+  local ok, err = pcall(dofile, dir .. "3s_areas.lua")
+  if not ok then
+    ColourNote("red", "", "[bot] could not load 3s_areas.lua: " .. tostring(err))
+  else
+    local n = 0
+    for _ in pairs(areas) do n = n + 1 end
+    note(n .. " areas loaded (.areas to list, .binfo for help)")
+  end
+end
+
+-- ====================== looting ======================
+local function loot_room()
+  if bot_flags.item and not bot_flags.player and bot.vacuum then
+    if     bot.opts.stackit  then Execute("stackall")
+    elseif bot.opts.bagit    then Execute("_bagall")
+    elseif bot.opts.necbagit then Send("!qtrance gather")
+    elseif bot.opts.bardit   then Send("!get all") Send("!put all in disc") Send("!drop all")
+    else   Send("!get all") end
+  end
+  if bot_flags.corpse and not bot_flags.player then Send("!get corpse") end
+  if bot_flags.gold   and not bot_flags.player then Send("!get coins")  end
+end
+
+-- ====================== walking ======================
+local function end_of_path()
+  if bot.no_loop or not bot.foundmob then
+    note("end of path - stopping" .. (bot.no_home and "" or ", heading home"))
+    bot_kill()
+    if not bot.no_home then Send("go home") end
+  else
+    bot.pos = 1
+    bot.foundmob = false
+    bot_step()
+  end
+end
+
+function bot_step()
+  if not bot.active then return end
+  if bot.pos > #bot.path then end_of_path() return end
+  local dir = bot.path[bot.pos]
+  bot.lastdir = dir
+  bot.pos = bot.pos + 1
+  Send(dir)
+  ab_draw()
+end
+
+function bot_path_undo()
+  if rec then
+    if #rec.path > 0 then
+      local dropped = table.remove(rec.path)
+      note("recording: move failed - dropped '" .. dropped .. "'")
+      ab_draw()
+    end
+    return
+  end
+  if not bot.active then return end
+  bot.pos = math.max(1, bot.pos - 1)
+  note("could not move - path position now " .. bot.pos .. "/" .. #bot.path)
+end
+
+-- ====================== event handlers ======================
+function bot_on_room(roominfo)
+  if not bot.active then return end
+  if bot.paused_on_mob then
+    if not bot.wimpy_warned then
+      bot.wimpy_warned = true
+      note("WIMPY! Moved during the fight - bot stopped, position saved.")
+      note("Walk back to where you fought, then '.resume' to continue.")
+      Sound("SysExclamation")
+      bot_stop()
+    end
+    return
+  end
+  bot.wimpy_warned = false
+  reset_room_flags()
+  bot.mob_pending = nil
+  bot.armed = true
+end
+
+function bot_on_item(line)
+  if not bot.active then return end
+  bot_flags.item = true
+  if line:match("^=I=.*preserved.*corpse of.*%.$") then bot_flags.corpse = true end
+end
+
+function bot_on_player(name)
+  if not bot.active then return end
+  for _, member in ipairs(party) do
+    if name:find(member, 1, true) then return end
+  end
+  bot_flags.player = true
+end
+
+function bot_on_mob(name)
+  if rec then
+    local clean = name:gsub("%s*%b{}", ""):gsub("%s*%b[]", ""):gsub("%s+$", "")
+    if #clean > 0 and not rec.mobs[clean] then
+      rec.mobs[clean] = true
+      note("recording: mob noted - " .. clean)
+    end
+    return
+  end
+  if not bot.active or bot.paused_on_mob or not bot.cfg then return end
+  local entry = bot.cfg.mobs and bot.cfg.mobs[name]
+  if not entry and bot.cfg.mobs then
+    -- live lines often carry tags: 'A cave troll {angry} [scratched].'
+    for k, v in pairs(bot.cfg.mobs) do
+      if name:sub(1, #k) == k then entry = v break end
+    end
+  end
+  local kill
+  if entry then
+    if entry.hard and not bot.hardmode then return end
+    kill = entry.kill
+  elseif bot.cfg.default_mob then
+    kill = bot.cfg.default_mob
+  end
+  if kill then bot.mob_pending = kill end
+end
+
+function bot_on_prompt()
+  if not bot.active then return end
+  if bot.mob_pending then
+    local mob = bot.mob_pending
+    bot.mob_pending = nil
+    if bot_flags.player then
+      note("Found player. skipping!")
+      bot_step()
+      return
+    end
+    -- engage
+    bot.armed = false
+    bot.paused_on_mob = true
+    bot.foundmob = true
+    save_position()
+    local rev = REV[bot.lastdir or ""]
+    if rev then Send("ra " .. rev) end
+    bot.current_mob = mob
+    Send("kill " .. mob)
+    loot_room()
+    if bot.stacknum > 0 then
+      bot.stacknum = bot.stacknum - 1
+      note("Stacking " .. bot.stacknum .. " more.")
+      bot.paused_on_mob = false
+      bot.armed = true
+      bot_step()
+    end
+    ab_draw()
+    return
+  end
+  if bot.armed then
+    bot.armed = false
+    loot_room()
+    bot_step()
+  end
+end
+
+function bot_on_killblow()
+  if bot.active and bot.opts.autokill then
+    DoAfterSpecial(1.5, 'Send("ki")', sendto.script)
+  end
+end
+
+function bot_no_mob_here(name)
+  if bot.active and bot.paused_on_mob and bot.opts.autoresume
+     and name == bot.current_mob then
+    DoAfterSpecial(1, "bot_resume_step()", sendto.script)
+  end
+end
+
+-- ====================== commands ======================
+function bot_start(area)
+  if not areas[area] then
+    note("unknown area '" .. area .. "' (.areas to list)")
+    return
+  end
+  local cfg = areas[area]
+  bot.area = area; bot.cfg = cfg
+  bot.path = cfg.path; bot.pos = 1
+  bot.no_loop  = (cfg.no_loop == 1)
+  bot.no_home  = (cfg.no_home == 1)
+  bot.hardmode = (cfg.hardmode == 1)
+  bot.vacuum   = (cfg.vacuum ~= 0)
+  bot.foundmob = false
+  bot.paused_on_mob = false
+  bot.active = true
+  reset_room_flags()
+  save_position()
+  note("botting '" .. area .. "' - " .. #bot.path .. " steps. '..' to step, .stop to stop.")
+  bot_resume_step()
+  ab_draw()
+end
+
+function bot_resume_step()
+  if not bot.active then note("bot is not active") return end
+  bot.paused_on_mob = false
+  bot.mob_pending = nil
+  bot.armed = false
+  Send("!glance")
+  ab_draw()
+end
+
+function bot_pause()
+  if not bot.active then note("Bot is not active") return end
+  bot.paused_on_mob = true
+  bot.armed = false
+  note("paused at " .. (bot.pos) .. "/" .. #bot.path)
+  ab_draw()
+end
+
+function bot_stop()
+  if not bot.active then note("Bot is not active") return end
+  save_position()
+  bot.paused_on_mob = true
+  bot.armed = false
+  note("stopped. position " .. bot.pos .. "/" .. #bot.path .. " saved (.resume / .dcr to continue)")
+  ab_draw()
+end
+
+function bot_resume_saved()
+  local area = GetVariable("save_area") or ""
+  local pos  = tonumber(GetVariable("save_pos") or "") or 1
+  if area == "" or not areas[area] then note("nothing to resume") return end
+  bot_start_quiet(area, pos)
+end
+
+function bot_start_quiet(area, pos)
+  bot_start(area)
+  bot.pos = math.min(pos, #bot.path)
+  note("resumed '" .. area .. "' at step " .. bot.pos)
+end
+
+function bot_kill()
+  bot.active = false
+  bot.paused_on_mob = false
+  bot.armed = false
+  bot.mob_pending = nil
+  save_position()
+  note("bot killed")
+  ab_draw()
+end
+
+function bot_set(opt, val)
+  if bot.opts[opt] == nil and opt ~= "hardmode" then
+    note("unknown option '" .. opt .. "'")
+    return
+  end
+  if opt == "hardmode" then bot.hardmode = (val == "on")
+  else bot.opts[opt] = (val == "on") end
+  save_position()
+  note(opt .. ": " .. val)
+  ab_draw()
+end
+
+-- auto-capture the party list from the in-game party table
+local pcap = nil
+
+function party_capture_start()
+  pcap = {}
+end
+
+function party_capture_member(name)
+  if pcap and name ~= "Name" then pcap[#pcap + 1] = name end
+end
+
+function party_capture_end()
+  if not pcap then return end
+  if #pcap > 0 then
+    party = pcap
+    SetVariable("party", table.concat(party, "\n"))
+    note("party captured: " .. table.concat(party, ", "))
+  end
+  pcap = nil
+end
+
+function bot_party_add(name)
+  party[#party + 1] = name
+  SetVariable("party", table.concat(party, "\n"))
+  note("party: " .. table.concat(party, ", "))
+end
+
+function bot_party_remove(name)
+  for i, m in ipairs(party) do
+    if m == name then table.remove(party, i) break end
+  end
+  SetVariable("party", table.concat(party, "\n"))
+  note("party: " .. table.concat(party, ", "))
+end
+
+function bot_list_areas()
+  local t = {}
+  for k in pairs(areas) do t[#t + 1] = k end
+  table.sort(t)
+  note("areas: " .. table.concat(t, ", "))
+end
+
+function bot_help()
+  Note([[
+3S Stepper commands:
+  - <area> / walker <area>   start botting (see .areas)
+  ..        step/resume      .stop   stop+save     .pause  pause
+  .resume / .dcr             resume from saved position
+  .stack <n>   stack mobs    v on|off   vacuum looting
+  pa/pr <name>               party add/remove (skip-protection)
+  .set <opt> on|off          autokill autoresume hardmode stackit bagit necbagit bardit
+]])
+end
+
+-- ====================== path recorder ======================
+local REC_MOVES = {
+  n=1, s=1, e=1, w=1, u=1, d=1, ne=1, nw=1, se=1, sw=1,
+  north=1, south=1, east=1, west=1, up=1, down=1,
+  northeast=1, northwest=1, southeast=1, southwest=1,
+  out=1, enter=1, leave=1,
+}
+
+function rec_start(name)
+  name = name:lower()
+  if name == "status" then rec_status() return end
+  if rec then note("already recording '" .. rec.name .. "' - 'record save' or 'record cancel' first") return end
+  if bot.active then bot_kill() end
+  rec = { name = name, path = {}, mobs = {}, kill = nil }
+  note("RECORDING area '" .. name .. "'. Walk the route; moves are captured.")
+  note("Special steps: 'r: open door'   Set kill word: 'record kill troll'")
+  note("'record undo' drops the last step, 'record save' writes it, 'record cancel' discards.")
+  ab_draw()
+end
+
+function rec_special(cmd)
+  if not rec then note("not recording - 'record <name>' first") Send(cmd) return end
+  rec.path[#rec.path + 1] = cmd
+  Send(cmd)
+  note("recording: step " .. #rec.path .. " = '" .. cmd .. "'")
+  ab_draw()
+end
+
+function rec_undo()
+  if not rec then note("not recording") return end
+  if #rec.path == 0 then note("recording: nothing to undo") return end
+  local dropped = table.remove(rec.path)
+  note("recording: dropped '" .. dropped .. "' (" .. #rec.path .. " steps left)")
+  ab_draw()
+end
+
+function rec_setkill(word)
+  if not rec then note("not recording") return end
+  rec.kill = word
+  note("recording: kill word = " .. word)
+end
+
+function rec_status()
+  if not rec then
+    note("not recording. 'record <name>' starts; the route + mobs are captured as you walk.")
+    return
+  end
+  local nm = 0
+  for _ in pairs(rec.mobs) do nm = nm + 1 end
+  note(string.format("recording '%s': %d steps, %d mob types, kill word: %s",
+    rec.name, #rec.path, nm, rec.kill or "(not set - 'record kill <word>')"))
+  if #rec.path > 0 then
+    note("route so far: " .. table.concat(rec.path, " "))
+  end
+end
+
+function rec_cancel()
+  if not rec then note("not recording") return end
+  note("recording '" .. rec.name .. "' discarded")
+  rec = nil
+  ab_draw()
+end
+
+function rec_save()
+  if not rec then note("not recording") return end
+  if #rec.path == 0 then note("recording: no steps - walk the route first (or 'record cancel')") return end
+  local kill = rec.kill or "CHANGEME"
+  -- build the lua block
+  local function q(s) return '"' .. s:gsub('\\', '\\\\'):gsub('"', '\\"') .. '"' end
+  local b = {}
+  b[#b + 1] = "  " .. rec.name .. " = {"
+  local steps = {}
+  for _, s in ipairs(rec.path) do steps[#steps + 1] = q(s) end
+  b[#b + 1] = "    path = { " .. table.concat(steps, ", ") .. " },"
+  b[#b + 1] = "    no_loop = 0, no_home = 1, hardmode = 0, vacuum = 1,"
+  local mobnames = {}
+  for m in pairs(rec.mobs) do mobnames[#mobnames + 1] = m end
+  table.sort(mobnames)
+  if #mobnames > 0 then
+    b[#b + 1] = "    mobs = {"
+    for _, m in ipairs(mobnames) do
+      b[#b + 1] = "      [" .. q(m) .. "] = { kill = " .. q(kill) .. " },"
+    end
+    b[#b + 1] = "    },"
+  end
+  b[#b + 1] = "  },"
+  local block = table.concat(b, "\n") .. "\n"
+  -- append into 3s_areas.lua (before the closing brace)
+  local fn = GetPluginInfo(GetPluginID(), 20) .. "3s_areas.lua"
+  local f = io.open(fn, "r")
+  if not f then note("ERROR: cannot open " .. fn) return end
+  local content = f:read("*a")
+  f:close()
+  local body = content:match("^(.*)}%s*$")
+  if not body then note("ERROR: unexpected 3s_areas.lua format - not saved") return end
+  f = io.open(fn, "w")
+  if not f then note("ERROR: cannot write " .. fn) return end
+  f:write(body .. block .. "}\n")
+  f:close()
+  -- hot-load so it's usable right away
+  local newarea = { path = {}, no_loop = 0, no_home = 1, hardmode = 0, vacuum = 1, mobs = {} }
+  for _, s in ipairs(rec.path) do newarea.path[#newarea.path + 1] = s end
+  for _, m in ipairs(mobnames) do newarea.mobs[m] = { kill = kill } end
+  if areas[rec.name] then note("note: '" .. rec.name .. "' existed - the new recording takes over") end
+  areas[rec.name] = newarea
+  note("saved '" .. rec.name .. "': " .. #rec.path .. " steps, " .. #mobnames .. " mob types -> 3s_areas.lua")
+  if kill == "CHANGEME" then
+    note("WARNING: no kill word was set - edit 3s_areas.lua and replace CHANGEME (or re-record)")
+  end
+  rec = nil
+  ab_draw()
+end
+
+-- ====================== bots window (tabbed: Area | Chaos | Deadman) ======================
+local ABWIN = "areabot_" .. GetPluginID()
+local ABW = 300
+local ab_info
+local ab_visible = (GetVariable("ab_visible") ~= "0")
+local ab_tab = GetVariable("ab_tab") or "Area"
+
+local function ab_btn(id, x1, y1, x2, y2, label, active, tooltip)
+  WindowRectOp(ABWIN, 2, x1, y1, x2, y2, active and 0x707030 or 0x402818)
+  WindowRectOp(ABWIN, 1, x1, y1, x2, y2, active and 0x90C040 or 0x604020)
+  WindowText(ABWIN, "fb", label, x1 + math.floor((x2 - x1) / 2) - #label * 4, y1 + 3, 0, 0,
+             active and 0x80FFFF or 0xE0C8A0)
+  WindowAddHotspot(ABWIN, id, x1, y1, x2, y2, "", "", "ab_button", "", "", tooltip or label, 1, 0)
+end
+
+-- called by the chaos plugin when its tab bar hands over to us
+function ab_show_at(x, y, tabname)
+  if not ab_info then ab_info = movewindow.install(ABWIN, 5, 0) end
+  x, y = tonumber(x), tonumber(y)
+  if x and y then ab_info.window_left, ab_info.window_top = x, y end
+  if tabname and tabname ~= "" then ab_tab = tabname end
+  ab_visible = true
+  SetVariable("ab_visible", "1")
+  SetVariable("ab_tab", ab_tab)
+  ab_draw()
+end
+
+function dm_button(flags, id)
+  if     id == "dm_power" then dm_on = not dm_on
+  elseif id == "dm_minus" then dm_secs = math.max(60, dm_secs - 60)
+  elseif id == "dm_plus"  then dm_secs = math.min(7200, dm_secs + 60)
+  end
+  SetVariable("dm_on", dm_on and "1" or "0")
+  SetVariable("dm_secs", tostring(dm_secs))
+  ab_draw()
+end
+
+function ab_button(flags, id)
+  if     id == "ab_walk"   then bot_resume_step()
+  elseif id == "ab_pause"  then bot_pause()
+  elseif id == "ab_stop"   then bot_stop()
+  elseif id == "ab_res"    then bot_resume_saved()
+  elseif id == "ab_kill"   then bot_kill()
+  elseif id == "ab_autok"  then bot_set("autokill", bot.opts.autokill and "off" or "on")
+  elseif id == "ab_autor"  then bot_set("autoresume", bot.opts.autoresume and "off" or "on")
+  elseif id == "ab_hard"   then bot_set("hardmode", bot.hardmode and "off" or "on")
+  elseif id == "ab_loot"   then bot.vacuum = not bot.vacuum note("vacuum: " .. (bot.vacuum and "on" or "off"))
+  elseif id == "ab_hide"   then ab_visible = false SetVariable("ab_visible", "0") WindowShow(ABWIN, false) return
+  elseif id == "tab_Area" or id == "tab_Deadman" then
+    ab_tab = id:sub(5)
+    SetVariable("ab_tab", ab_tab)
+  elseif id == "tab_Chaos" then
+    -- hand the window position over to the chaos plugin
+    local x = ab_info and ab_info.window_left or 0
+    local y = ab_info and ab_info.window_top or 0
+    ab_visible = false
+    SetVariable("ab_visible", "0")
+    WindowShow(ABWIN, false)
+    local rc = CallPlugin(CHAOS_ID, "cs_show_at", tostring(x), tostring(y))
+    if rc ~= 0 then
+      note("chaos sea plugin not available")
+      ab_visible = true
+      SetVariable("ab_visible", "1")
+      ab_draw()
+    end
+    return
+  elseif id:match("^area_") then
+    bot_start(id:sub(6))
+    return
+  end
+  ab_draw()
+end
+
+local function ab_tabs_row()
+  local tw = math.floor((ABW - 2) / 3)
+  for i, t in ipairs({ "Area", "Chaos", "Deadman" }) do
+    local x1 = 1 + (i - 1) * tw
+    local sel = (t == ab_tab)
+    WindowRectOp(ABWIN, 2, x1, 18, x1 + tw - 1, 36, sel and 0x604020 or 0x301E12)
+    WindowRectOp(ABWIN, 1, x1, 18, x1 + tw - 1, 36, 0x604020)
+    WindowText(ABWIN, sel and "fb" or "f", t, x1 + math.floor(tw / 2) - #t * 4, 22, 0, 0,
+               sel and 0x40C0FF or 0xD0D0D0)
+    WindowAddHotspot(ABWIN, "tab_" .. t, x1, 18, x1 + tw - 1, 36, "", "", "ab_button", "", "", t, 1, 0)
+  end
+end
+
+local function ab_draw_area()
+  local txt2, col2
+  if rec then
+    local nm = 0
+    for _ in pairs(rec.mobs) do nm = nm + 1 end
+    txt2, col2 = string.format("RECORDING %s: %d steps, %d mobs", rec.name, #rec.path, nm), 0x40C0FF
+  elseif not bot.active then
+    txt2, col2 = "no area loaded - click one below", 0x808080
+  elseif bot.paused_on_mob then
+    txt2, col2 = "FIGHTING / PAUSED - Walk resumes", 0x5050F0
+  else
+    txt2, col2 = "WALKING " .. (bot.area or "?"), 0x60E060
+  end
+  WindowText(ABWIN, "fb", txt2, 8, 40, 0, 0, col2)
+  local total = #bot.path
+  local done = math.max(0, bot.pos - 1)
+  WindowText(ABWIN, "f", string.format("step %d / %d", done, total), 8, 55, 0, 0, 0x909090)
+  WindowRectOp(ABWIN, 2, 100, 57, 292, 67, 0x2A1C14)
+  if total > 0 then
+    local fill = math.floor(190 * math.min(done / total, 1))
+    if fill > 0 then WindowRectOp(ABWIN, 2, 101, 58, 101 + fill, 66, 0x40A040) end
+  end
+  WindowRectOp(ABWIN, 1, 100, 57, 292, 67, 0x604020)
+  ab_btn("ab_walk", 8, 73, 62, 93, "Walk", false, "Step / resume ('..')")
+  ab_btn("ab_pause", 66, 73, 124, 93, "Pause", false, "Pause, keep position")
+  ab_btn("ab_stop", 128, 73, 182, 93, "Stop", false, "Stop and save position")
+  ab_btn("ab_res", 186, 73, 248, 93, "Resume", false, "Resume from saved position (.dcr)")
+  ab_btn("ab_kill", 252, 73, 292, 93, "Kill", false, "Kill the bot completely")
+  ab_btn("ab_autok", 8, 97, 70, 117, "AutoK", bot.opts.autokill, "'ki' after every killing blow")
+  ab_btn("ab_autor", 74, 97, 136, 117, "AutoR", bot.opts.autoresume, "Auto-walk on 'There is no X here.'")
+  ab_btn("ab_hard", 140, 97, 196, 117, "Hard", bot.hardmode, "Engage 'hard' mobs too")
+  ab_btn("ab_loot", 200, 97, 250, 117, "Loot", bot.vacuum, "Auto-loot rooms")
+  ab_btn("ab_hide", 256, 97, 292, 117, "X", false, "Hide ('areabot' brings it back)")
+  WindowText(ABWIN, "fb", "Areas  (click to start)", 8, 123, 0, 0, 0x40C0FF)
+  local names = {}
+  for k in pairs(areas) do names[#names + 1] = k end
+  table.sort(names)
+  local rows = math.ceil(#names / 2)
+  for i, name in ipairs(names) do
+    local col = (i <= rows) and 0 or 1
+    local row = (col == 0) and i or (i - rows)
+    local x = 8 + col * 146
+    local y = 125 + row * 14
+    local active = (bot.active and bot.area == name)
+    WindowText(ABWIN, "f", name, x, y, 0, 0, active and 0x60FF60 or 0x40C0C0)
+    local a = areas[name]
+    local nm = 0
+    if a.mobs then for _ in pairs(a.mobs) do nm = nm + 1 end end
+    WindowAddHotspot(ABWIN, "area_" .. name, x, y, x + 140, y + 13, "", "", "ab_button", "", "",
+      name .. ": " .. #a.path .. " steps, " .. nm .. " mob types - click to start", 1, 0)
+  end
+end
+
+local function ab_draw_deadman()
+  local idle = os.time() - last_input
+  local running = bot.active or (GetPluginVariable(CHAOS_ID, "auto") == "1")
+  local line1, col1
+  if not dm_on then
+    line1, col1 = "OFF - bots never auto-stop", 0x808080
+  else
+    line1, col1 = string.format("stops bots after %dm idle", math.floor(dm_secs / 60)), 0x60E060
+  end
+  WindowText(ABWIN, "f", line1, 8, 42, 0, 0, col1)
+  local idlecol = 0x909090
+  if dm_on and running and idle > dm_secs * 0.8 then idlecol = 0x5050F0 end
+  WindowText(ABWIN, "f", string.format("idle %dm %02ds   %s",
+    math.floor(idle / 60), idle % 60, running and "bot RUNNING" or "no bot active"),
+    8, 56, 0, 0, idlecol)
+  dm_btn_in_ab("dm_power", 8, 74, 64, 94, dm_on and "ON" or "OFF", dm_on, "Stop all bots when idle too long")
+  dm_btn_in_ab("dm_minus", 70, 74, 94, 94, "-", false, "One minute less")
+  WindowText(ABWIN, "f", string.format("%dm", math.floor(dm_secs / 60)), 100, 77, 0, 0, 0xF0F0F0)
+  dm_btn_in_ab("dm_plus", 134, 74, 158, 94, "+", false, "One minute more")
+  ab_btn("ab_hide", 256, 74, 292, 94, "X", false, "Hide ('deadman' brings it back)")
+end
+
+function dm_btn_in_ab(id, x1, y1, x2, y2, label, active, tooltip)
+  WindowRectOp(ABWIN, 2, x1, y1, x2, y2, active and 0x707030 or 0x402818)
+  WindowRectOp(ABWIN, 1, x1, y1, x2, y2, active and 0x90C040 or 0x604020)
+  WindowText(ABWIN, "fb", label, x1 + math.floor((x2 - x1) / 2) - #label * 4, y1 + 3, 0, 0,
+             active and 0x80FFFF or 0xE0C8A0)
+  WindowAddHotspot(ABWIN, id, x1, y1, x2, y2, "", "", "dm_button", "", "", tooltip or label, 1, 0)
+end
+
+function ab_draw()
+  if not ab_visible then return end
+  if not ab_info then ab_info = movewindow.install(ABWIN, 5, 0) end
+  local ABH = (ab_tab == "Deadman") and 104 or 306
+  WindowCreate(ABWIN, ab_info.window_left, ab_info.window_top, ABW, ABH,
+               ab_info.window_mode, ab_info.window_flags, 0x101418)
+  WindowFont(ABWIN, "f",  "Lucida Console", 9, false, false, false, false)
+  WindowFont(ABWIN, "fb", "Lucida Console", 9, true,  false, false, false)
+  WindowRectOp(ABWIN, 1, 0, 0, ABW, ABH, 0x604020)
+  WindowRectOp(ABWIN, 2, 1, 1, ABW - 1, 17, 0x402818)
+  WindowText(ABWIN, "fb", "Bots", 8, 3, 0, 0, 0x40C0FF)
+  movewindow.add_drag_handler(ABWIN, 0, 0, ABW, 17, miniwin.cursor_hand)
+  ab_tabs_row()
+  if ab_tab == "Deadman" then
+    ab_draw_deadman()
+  else
+    ab_draw_area()
+  end
+  WindowShow(ABWIN, true)
+end
+
+function ab_toggle_window()
+  ab_visible = not ab_visible
+  SetVariable("ab_visible", ab_visible and "1" or "0")
+  if ab_visible then ab_tab = "Area" SetVariable("ab_tab", ab_tab) ab_draw() else WindowShow(ABWIN, false) end
+end
+
+function dm_toggle_window()
+  if ab_visible and ab_tab == "Deadman" then
+    ab_visible = false
+    SetVariable("ab_visible", "0")
+    WindowShow(ABWIN, false)
+  else
+    ab_tab = "Deadman"
+    SetVariable("ab_tab", ab_tab)
+    ab_visible = true
+    SetVariable("ab_visible", "1")
+    ab_draw()
+  end
+end
+
+function dm_draw()
+  if ab_visible and ab_tab == "Deadman" then ab_draw() end
+end
+
+-- ====================== idle deadman switch ======================
+function OnPluginCommand(text)
+  last_input = os.time()
+  if rec then
+    for token in text:gmatch("[^;]+") do
+      local t = token:gsub("^%s+", ""):gsub("%s+$", ""):lower()
+      if REC_MOVES[t] then
+        rec.path[#rec.path + 1] = t
+        note("recording: step " .. #rec.path .. " = " .. t)
+        ab_draw()
+      end
+    end
+  end
+  return true
+end
+
+function bot_idle_check()
+  local idle = os.time() - last_input
+  if dm_on and idle > dm_secs then
+    local fired = false
+    if bot.active and not bot.paused_on_mob then
+      bot_stop()
+      fired = true
+    end
+    if GetPluginVariable(CHAOS_ID, "auto") == "1" then
+      Execute("cs auto off")
+      fired = true
+    end
+    if fired then
+      note("DEADMAN: " .. math.floor(dm_secs / 60) .. "m without input - bots stopped")
+      Sound("SysExclamation")
+    end
+  end
+  dm_draw()
+end
+
+AddTimer("bot_idle", 0, 0, 5, "", timer_flag.Enabled + timer_flag.Replace, "bot_idle_check")
+
+-- ====================== init ======================
+function OnPluginSaveState()
+  if ab_info then movewindow.save_state(ABWIN) end
+end
+
+function OnPluginInstall()
+  load_areas()
+  ab_draw()
+  local p = GetVariable("party")
+  if p and p ~= "" then
+    for m in p:gmatch("[^\n]+") do party[#party + 1] = m end
+  end
+  bot.opts.autokill = (GetVariable("autokill") == "1")
+end
+]]>
+</script>
+</muclient>

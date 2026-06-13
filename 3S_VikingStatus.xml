@@ -1,0 +1,1051 @@
+<?xml version="1.0" encoding="iso-8859-1"?>
+<!DOCTYPE muclient>
+<muclient>
+<plugin
+   name="ThreeS_VikingStatus"
+   author="Joakim"
+   id="ab12cd34ef56ab78cd90ef12"
+   language="Lua"
+   purpose="Tabbed Viking status window: Stats / City / People / Map / Feeds"
+   date_written="2026-06-10"
+   requires="4.73"
+   version="2.0"
+   save_state="y"
+>
+<description><![CDATA[
+Tabbed graphical Viking status window fed by ThreeS_MIP (BBE feed).
+Tabs: Stats (gauges) | City | People | Map | Feeds.
+The Feeds tab lists every key the mud currently sends - used to discover
+data for future tabs (Goods/Sea/Bonds/Ranks).
+
+Commands:
+  vikbar           show/hide the window
+  viktab <name>    switch tab (Stats City People Goods Holds Sea Map Feeds)
+  vmapon           request the Viking live feed (vtoggle mip_*)
+  vtick on|off     5-minute keepalive 'l'
+]]>
+</description>
+</plugin>
+
+<aliases>
+  <alias match="^vikbar$" enabled="y" regexp="y" send_to="12" sequence="100"><send>vik_toggle()</send></alias>
+  <alias match="^viktab (\w+)$" enabled="y" regexp="y" send_to="12" sequence="100"><send>vik_settab("%1")</send></alias>
+  <alias match="^vmapon$" enabled="y" regexp="y" send_to="12" sequence="100">
+  <send>
+    Send("vtoggle mip_map")
+    Send("vtoggle mip_city")
+    Send("vtoggle mip_extra")
+    Note("[vmip] requested mip_map+city+extra feed")
+  </send>
+  </alias>
+  <alias match="^vtick (on|off)$" enabled="y" regexp="y" send_to="12" sequence="100"><send>vik_tick("%1")</send></alias>
+  <alias match="^vikdump$" enabled="y" regexp="y" send_to="12" sequence="100"><send>vik_dump()</send></alias>
+  <alias match="^vikloc (\d+) (\d+)(?:\s+(.*))?$" enabled="y" regexp="y" send_to="12" sequence="100"><send>vik_setloc(%1, %2, "%3")</send></alias>
+</aliases>
+
+<script>
+<![CDATA[
+require "movewindow"
+
+local MIP_ID = "9a8b3c5d1e2f4a6b8c0d2e4f"
+local WIN = "vikingstatus_" .. GetPluginID()
+local W, H = 560, 540
+local windowinfo
+local visible = (GetVariable("visible") ~= "0")
+local tab = GetVariable("tab") or "Stats"
+local TABS = { "Stats", "City", "People", "Goods", "Holds", "Sea", "Map", "Feeds" }
+
+local C = {
+  bg = 0x201510, panel = 0x2A1C14, border = 0x604020,
+  label = 0xD0D0D0, dim = 0x808080, text = 0xF0F0F0,
+  head = 0x40C0FF, good = 0x60E060, warn = 0x40C0FF, bad = 0x5050F0,
+  tabbg = 0x301E12, tabsel = 0x604020, title = 0x402818,
+}
+
+-- terrain char -> colour (BGR), decoded from the live VMR rows
+local TERRAIN = {
+  ["."] = 0x101010,                                       -- void / walls
+  ["t"] = 0x606060, ["T"] = 0x707070,                     -- tundra grey
+  ["h"] = 0x20C0C0, ["H"] = 0x20C0C0,                     -- hills yellow
+  ["A"] = 0x3030D0,                                       -- mountains red
+  ["f"] = 0x208020, ["F"] = 0x30A030,                     -- forest
+  ["p"] = 0x60C060,                                       -- plains
+  ["W"] = 0xD0A000, ["w"] = 0xD0A000, ["~"] = 0xD0A000,   -- water
+  ["r"] = 0x181818, ["="] = 0x303030,                     -- road / bridge
+  ["P"] = 0x909090,                                       -- gate / passage
+  ["L"] = 0x2080E0,                                       -- lin hold
+  ["S"] = 0x40C0E0,                                       -- settlement
+  ["C"] = 0x2020C0,                                       -- capital
+  ["R"] = 0xC060C0,                                       -- ruins
+  ["M"] = 0x2020C0,                                       -- Midgard (capital)
+  ["*"] = 0xE060E0,                                       -- point of interest
+  ["X"] = 0xFFFFFF,                                       -- you (feed marker)
+}
+
+local function loc_color(t)
+  t = (t or ""):lower()
+  if     t:find("cap")    then return 0x2020E0
+  elseif t:find("lin")    then return 0x2080E0
+  elseif t:find("set")    then return 0x40C0E0
+  elseif t:find("mentor") then return 0x60E060
+  elseif t:find("blot")   then return 0x40E080
+  elseif t:find("farm")   then return 0x40A040
+  elseif t:find("seer")   then return 0xE060C0
+  elseif t:find("ruin")   then return 0xC060C0
+  else return 0xD0D0D0 end
+end
+
+local function parse_locs(s)
+  local out = {}
+  if not s or s == "" then return out end
+  for entry in s:gmatch("[^;]+") do
+    local f = {}
+    for tok in entry:gmatch("[^|]*") do
+      if tok ~= "" or #f > 0 then f[#f + 1] = tok end
+    end
+    local i = 1
+    while i + 3 <= #f do
+      if tonumber(f[i + 2]) and tonumber(f[i + 3]) then
+        out[#out + 1] = { type = f[i], name = f[i + 1],
+                          x = tonumber(f[i + 2]), y = tonumber(f[i + 3]) }
+        i = i + 4
+      else
+        i = i + 1
+      end
+    end
+  end
+  return out
+end
+
+local function grad(pct)
+  if pct > 100 then return 0xFFC040 end
+  if pct < 0 then pct = 0 end
+  local r, g
+  if pct >= 50 then r = math.floor(255 * (100 - pct) / 50); g = 220
+  else r = 255; g = math.floor(220 * pct / 50) end
+  return g * 256 + r
+end
+
+local function num(s) return tonumber(s) or 0 end
+
+local function split(s, sep)
+  local out = {}
+  if not s or s == "" then return out end
+  local pat = "([^" .. sep .. "]*)" .. sep .. "?"
+  local pos = 1
+  while pos <= #s + 1 do
+    local st, en, cap = s:find(pat, pos)
+    if not st then break end
+    out[#out + 1] = cap
+    if en < st then break end
+    pos = en + 1
+  end
+  if out[#out] == "" then out[#out] = nil end
+  return out
+end
+
+local function clean(s)
+  return (s or ""):gsub("grey:", ""):gsub("gray:", ""):gsub("red:", ""):gsub("green:", ""):gsub("blue:", ""):gsub("yellow:", "")
+end
+
+local function getvars()
+  local function gv(k) return GetPluginVariable(MIP_ID, k) or "" end
+  local vmip = {}
+  for line in gv("vmip_ser"):gmatch("[^\n]+") do
+    local k, v = line:match("^([^=]+)=(.*)$")
+    if k then vmip[k] = v end
+  end
+  return {
+    hp = num(gv("hp")), hpmax = num(gv("hpmax")),
+    sp = num(gv("sp")), spmax = num(gv("spmax")),
+    enemy_name = gv("enemy_name"), enemy_hp = gv("enemy_hp"),
+    gline1 = gv("gline1"), gline2 = gv("gline2"),
+    uptime = gv("uptime"), lag = gv("lag"),
+  }, vmip
+end
+
+local GOODS_NAME = { t = "timber", i = "iron", g = "grain", f = "furs", h = "fish",
+                     m = "mead", a = "amber", r = "runeston", s = "spoils" }
+
+-- "0|Name|a|b;1|Name2|..." -> map idx -> field list
+local function parse_idx_table(s)
+  local out = {}
+  for entry in (s or ""):gmatch("[^;]+") do
+    local f = split(entry, "|")
+    local i = tonumber(f[1])
+    if i then out[i] = f end
+  end
+  return out
+end
+
+-- known settlements (from the in-game Settlements list); vikloc overrides
+local DEFAULT_LOCNAMES = {
+  ["32|16"] = "Midgard",
+  ["14|8"]  = "Lodbrok's Hold",
+  ["52|6"]  = "Eiriksby",
+  ["10|16"] = "Imaird",
+  ["54|16"] = "Holmgard",
+  ["34|6"]  = "Hafrfjord",
+  ["30|26"] = "Uppsala",
+  ["16|24"] = "Borgarfjord",
+  ["50|24"] = "Vestergotland",
+  ["20|20"] = "Sverkersby",
+  ["46|8"]  = "Ericsgard",
+  ["12|22"] = "Birka",
+  ["52|20"] = "Lejre",
+  ["22|8"]  = "Nidaros",
+  ["50|27"] = "Jarl",
+  ["19|25"] = "Seer",
+  ["51|16"] = "Berserker",
+  ["4|28"]  = "Blot",
+}
+
+-- type labels for special places that are not travel towns
+local DEFAULT_LOCTYPE = {
+  ["50|27"] = "Mentor", ["19|25"] = "Seer", ["51|16"] = "Mentor", ["4|28"] = "Blot",
+}
+
+-- town <-> Midgard base routes (extracted from the old TinTin aliases);
+-- any pair is chained as <From>Mid + Mid<To>
+local ROUTES = {
+  BirMid = { "leave", "e", "e", "e", "e", "e", "e", "e", "e", "e", "e", "e", "e", "e", "e", "e", "e", "e", "e", "e", "e", "n", "n", "n", "n", "n", "n", "enter" },
+  BlotMid = { "s", "s", "s", "s", "s", "s", "s", "s", "s", "e", "e", "e", "e", "e", "e", "enter" },
+  BorMid = { "leave", "e", "e", "e", "e", "e", "e", "e", "e", "e", "e", "e", "e", "e", "e", "e", "e", "n", "n", "n", "n", "n", "n", "n", "n", "enter" },
+  EirMid = { "leave", "e", "e", "s", "s", "s", "s", "s", "s", "w", "w", "s", "e", "s", "s", "s", "w", "w", "w", "w", "w", "w", "w", "w", "w", "w", "w", "w", "w", "w", "w", "w", "w", "w", "w", "w", "enter" },
+  EriMid = { "leave", "w", "w", "s", "s", "s", "s", "s", "s", "s", "s", "w", "w", "w", "w", "w", "w", "w", "w", "w", "w", "w", "w", "enter" },
+  HafMid = { "leave", "s", "s", "s", "s", "s", "s", "s", "s", "s", "s", "w", "w", "enter" },
+  HolMid = { "leave", "w", "w", "w", "w", "w", "w", "w", "w", "w", "w", "w", "w", "w", "w", "w", "w", "w", "w", "w", "w", "w", "w", "enter" },
+  ImaMid = { "leave", "s", "e", "e", "e", "e", "e", "e", "e", "e", "e", "e", "e", "e", "e", "e", "e", "e", "e", "e", "e", "e", "e", "e", "n", "enter" },
+  LerMid = { "leave", "n", "n", "n", "n", "w", "w", "w", "w", "w", "w", "w", "w", "w", "w", "w", "w", "w", "w", "w", "w", "w", "w", "w", "w", "enter" },
+  LodMid = { "leave", "e", "e", "e", "e", "e", "e", "e", "e", "e", "e", "e", "e", "e", "e", "e", "e", "e", "e", "s", "s", "s", "s", "s", "s", "s", "s", "enter" },
+  MidBir = { "leave", "s", "s", "s", "s", "s", "s", "w", "w", "w", "w", "w", "w", "w", "w", "w", "w", "w", "w", "w", "w", "w", "w", "w", "w", "w", "w", "enter" },
+  MidBlot = { "leave", "w", "w", "w", "w", "w", "w", "n", "n", "n", "n", "n", "n", "n", "grove" },
+  MidBor = { "leave", "s", "s", "s", "s", "s", "s", "s", "s", "w", "w", "w", "w", "w", "w", "w", "w", "w", "w", "w", "w", "w", "w", "w", "w", "enter" },
+  MidEir = { "leave", "e", "e", "e", "e", "e", "e", "e", "e", "e", "e", "e", "e", "e", "e", "e", "e", "e", "e", "e", "e", "n", "n", "n", "w", "n", "e", "e", "n", "n", "n", "n", "n", "n", "w", "w", "enter" },
+  MidEri = { "leave", "e", "e", "e", "e", "e", "e", "e", "e", "e", "e", "e", "e", "n", "n", "n", "n", "n", "n", "n", "n", "e", "e", "enter" },
+  MidHaf = { "leave", "e", "e", "n", "n", "n", "n", "n", "n", "n", "n", "n", "n", "enter" },
+  MidHol = { "leave", "e", "e", "e", "e", "e", "e", "e", "e", "e", "e", "e", "e", "e", "e", "e", "e", "e", "e", "e", "e", "e", "e", "enter" },
+  MidIma = { "leave", "s", "w", "w", "w", "w", "w", "w", "w", "w", "w", "w", "w", "w", "w", "w", "w", "w", "w", "w", "w", "w", "w", "w", "n", "enter" },
+  MidLer = { "leave", "e", "e", "e", "e", "e", "e", "e", "e", "e", "e", "e", "e", "e", "e", "e", "e", "e", "e", "e", "e", "s", "s", "s", "s", "enter" },
+  MidLod = { "leave", "n", "n", "n", "n", "n", "n", "n", "n", "w", "w", "w", "w", "w", "w", "w", "w", "w", "w", "w", "w", "w", "w", "w", "w", "w", "w", "enter" },
+  MidNid = { "leave", "n", "n", "n", "n", "n", "n", "n", "n", "w", "w", "w", "w", "w", "w", "w", "w", "w", "w", "enter" },
+  MidSeer = { "leave", "w", "w", "w", "s", "s", "s", "s", "enter" },
+  MidSve = { "leave", "s", "s", "s", "s", "w", "w", "w", "w", "w", "w", "w", "w", "w", "w", "w", "w", "enter" },
+  MidUpp = { "leave", "s", "s", "s", "s", "s", "s", "s", "s", "s", "s", "w", "w", "enter" },
+  MidVas = { "leave", "e", "e", "e", "e", "e", "e", "e", "e", "e", "e", "e", "e", "e", "e", "e", "e", "e", "e", "s", "s", "s", "s", "e", "e", "s", "s", "s", "s", "w", "w", "enter" },
+  NidMid = { "leave", "e", "e", "e", "e", "e", "e", "e", "e", "e", "e", "s", "s", "s", "s", "s", "s", "s", "s", "enter" },
+  SeerMid = { "leave", "n", "n", "n", "n", "e", "e", "e", "enter" },
+  SveMid = { "leave", "e", "e", "e", "e", "e", "e", "e", "e", "e", "e", "e", "e", "s", "s", "s", "s", "enter" },
+  UppMid = { "leave", "e", "e", "n", "n", "n", "n", "n", "n", "n", "n", "n", "n", "enter" },
+  VasMid = { "leave", "e", "e", "n", "n", "n", "n", "w", "w", "n", "n", "n", "n", "w", "w", "w", "w", "w", "w", "w", "w", "w", "w", "w", "w", "w", "w", "w", "w", "w", "w", "enter" },
+}
+
+local function vik_send_route(origin, dest)
+  local cmds = {}
+  if origin ~= "Mid" then
+    local leg = ROUTES[origin .. "Mid"]
+    if not leg then return false end
+    for _, c in ipairs(leg) do cmds[#cmds + 1] = c end
+  end
+  if dest ~= "Mid" then
+    local leg = ROUTES["Mid" .. dest]
+    if not leg then return false end
+    for _, c in ipairs(leg) do cmds[#cmds + 1] = c end
+  end
+  for _, c in ipairs(cmds) do Send(c) end
+  return true
+end
+
+-- travel codes per settlement (routes are built into this plugin now)
+local TRAVEL_CODE = {
+  ["32|16"] = "Mid", ["14|8"] = "Lod", ["52|6"] = "Eir", ["10|16"] = "Ima",
+  ["54|16"] = "Hol", ["34|6"] = "Haf", ["30|26"] = "Upp", ["16|24"] = "Bor",
+  ["50|24"] = "Vas", ["20|20"] = "Sve", ["46|8"] = "Eri", ["12|22"] = "Bir",
+  ["52|20"] = "Ler", ["22|8"] = "Nid",
+}
+
+-- user-named map locations (vikloc x y name)
+local locnames = {}
+do
+  local s = GetVariable("locnames")
+  if s then
+    for line in s:gmatch("[^\n]+") do
+      local x, y, n = line:match("^(%-?%d+)|(%-?%d+)|(.*)$")
+      if x then locnames[x .. "|" .. y] = n end
+    end
+  end
+end
+
+local function locname(x, y)
+  local key = x .. "|" .. y
+  return locnames[key] or DEFAULT_LOCNAMES[key]
+end
+
+function vik_setloc(x, y, name)
+  name = (name or ""):gsub("^%s+", ""):gsub("%s+$", "")
+  local key = x .. "|" .. y
+  if name == "" then locnames[key] = nil else locnames[key] = name end
+  local out = {}
+  for k, n in pairs(locnames) do
+    out[#out + 1] = k .. "|" .. n
+  end
+  SetVariable("locnames", table.concat(out, "\n"))
+  Note("[viking] location (" .. x .. "," .. y .. "): " .. (name == "" and "(cleared)" or name))
+  vik_draw()
+end
+
+function vik_travel_click(flags, id)
+  local x, y = id:match("^trav_(%-?%d+)|(%-?%d+)$")
+  if not x then return end
+  local destkey = x .. "|" .. y
+  local dest = TRAVEL_CODE[destkey]
+  if not dest then return end
+  local destname = locname(tonumber(x), tonumber(y)) or dest
+  local rh = false
+  if bit and bit.band then rh = bit.band(flags, 0x20) ~= 0 end
+  if rh then
+    SetVariable("curtown", destkey)
+    SetVariable("curtown_time", tostring(os.time()))
+    Note("[viking] current location set: " .. destname)
+    return
+  end
+  -- two origin candidates: the live map position and the town we last
+  -- travelled to.  The map feed lags behind movement, so the NEWER of
+  -- the two wins.
+  local my, vmip = getvars()
+  local hd = split(vmip.VMAPH or "", "|")
+  local px, py = tonumber(hd[3]), tonumber(hd[4])
+  local live, livekey
+  if px and py then
+    for k, code in pairs(TRAVEL_CODE) do
+      local tx, ty = k:match("^(%-?%d+)|(%-?%d+)$")
+      if math.abs(px - tx) <= 2 and math.abs(py - ty) <= 2 then
+        live, livekey = code, k
+        break
+      end
+    end
+  end
+  local rem, remkey
+  local ck = GetVariable("curtown")
+  if ck and TRAVEL_CODE[ck] then rem, remkey = TRAVEL_CODE[ck], ck end
+  -- click-travel knowledge is authoritative: the map feed only updates on
+  -- the guild tick and lags far behind actual movement.  Only discard the
+  -- remembered town if the feed has clearly shown us somewhere ELSE for a
+  -- while (manual trekking since the last click).
+  if rem and px and py then
+    local vm_time = tonumber(GetPluginVariable(MIP_ID, "vmaph_time")) or 0
+    local ct_time = tonumber(GetVariable("curtown_time")) or 0
+    if vm_time > ct_time + 180 then
+      local tx, ty = remkey:match("^(%-?%d+)|(%-?%d+)$")
+      if math.abs(px - tx) > 4 or math.abs(py - ty) > 4 then
+        rem, remkey = nil, nil               -- wandered off since the last click
+      end
+    end
+  end
+  local origin, originkey
+  if rem then
+    origin, originkey = rem, remkey
+  elseif live then
+    origin, originkey = live, livekey
+  end
+  if not origin then
+    Note("[viking] can't tell where you are - right-click the town you're in, then click your destination")
+    return
+  end
+  if originkey == destkey then
+    Note("[viking] you are already at " .. destname)
+    return
+  end
+  Note("[viking] travelling " .. origin .. " -> " .. dest .. "  (" .. destname .. ")")
+  if not vik_send_route(origin, dest) then
+    Note("[viking] no route known for " .. origin .. " -> " .. dest)
+    return
+  end
+  SetVariable("curtown", destkey)
+  SetVariable("curtown_time", tostring(os.time()))
+end
+
+-- ---------------- drawing helpers ----------------
+local ly = 0  -- line cursor
+local function nl(dy) ly = ly + (dy or 14) end
+local function txt(x, s, col, font)
+  WindowText(WIN, font or "f", s or "", x, ly, 0, 0, col or C.text)
+end
+local function header(s)
+  txt(10, s, C.head, "fb"); nl(15)
+end
+
+local function bar(x1, x2, label, cur, max, showtext)
+  txt(10, label, C.label)
+  WindowRectOp(WIN, 2, x1, ly + 1, x2, ly + 13, C.panel)
+  local pct = 0
+  if max > 0 then pct = cur * 100 / max end
+  local fill = math.floor((x2 - x1 - 2) * math.min(pct, 100) / 100)
+  if fill > 0 then WindowRectOp(WIN, 2, x1 + 1, ly + 2, x1 + 1 + fill, ly + 12, grad(pct)) end
+  WindowRectOp(WIN, 1, x1, ly + 1, x2, ly + 13, C.border)
+  txt(x2 + 8, showtext, C.text)
+  nl(17)
+end
+
+-- ---------------- tab renderers ----------------
+local function draw_stats(my, vmip)
+  bar(70, 330, "HP",   my.hp, my.hpmax, my.hp .. "/" .. my.hpmax)
+  bar(70, 330, "Seid", num(vmip.SEID), num(vmip.MSEID), (vmip.SEID or "?") .. "/" .. (vmip.MSEID or "?"))
+  bar(70, 330, "Vig",  num(vmip.VIG),  num(vmip.MVIG),  (vmip.VIG or "?") .. "/" .. (vmip.MVIG or "?"))
+  bar(70, 330, "Rad",  num(vmip.RAD),  num(vmip.MRAD),  (vmip.RAD or "?") .. "/" .. (vmip.MRAD or "?"))
+  if my.enemy_name ~= "" then
+    bar(70, 330, "Enemy", num(my.enemy_hp), 100, my.enemy_hp .. "%  " .. my.enemy_name:sub(1, 24))
+  else
+    txt(10, "Enemy: -", C.dim); nl(17)
+  end
+  nl(6)
+  header("-- War --")
+  txt(10, string.format("God %s > %s   next %ss", vmip.GOD_POWER or "?", vmip.GOD_POWER_FOCUS or "?", vmip.GOD_POWER_NEXT or "?")); nl()
+  txt(10, string.format("Fury %s   Threk %s   Chain %s   Depth %s",
+    clean(vmip.FURY):sub(1, 12), vmip.MTHREK or "?", vmip.CHAIN or "?", vmip.BSDEPTH or "?")); nl()
+  txt(10, string.format("Raid %s   Blot %s", vmip.RAID or "?", (vmip.BLOT or "?"):sub(1, 16))); nl()
+  nl(6)
+  header("-- " .. (vmip.LIN or "?") .. "  GLvl " .. (vmip.GLVL or "?") .. " --")
+  txt(10, string.format("Kap %s   Aud %s   Vis %s   Soemd %s", vmip.KAP or "?", vmip.AUD or "?", vmip.VIS or "?", vmip.SOE or "?")); nl()
+  txt(10, string.format("VKxp %s   New %s   Reg %s   Tick %ss", vmip.VKXP or "?", vmip.VMNEW or "?", vmip.VMREG or "?", vmip.NEXTTICK or "?")); nl()
+  local wx = split(vmip.WEATHER or "", "|")
+  local dc = split(vmip.DCYCLE or "", "|")
+  txt(10, string.format("Weather %s/%s   Cycle %s", wx[1] or "?", wx[2] or "?", dc[1] or "?"), C.dim); nl()
+  nl(6)
+  local stfx = clean(vmip.STFX or ""):gsub("[%[%]]", "")
+  if stfx ~= "" then
+    -- per-effect colours matching the mud's own HP-bar line
+    local FX = { aeg = 0x40C040, sev = 0xC0C000, gjal = 0x40C040, gald = 0xC000C0,
+                 bles = 0xD0D0D0, helg = 0x4040E0, rymr = 0xA000A0 }
+    local x = 10
+    for tok in stfx:gmatch("%S+") do
+      local nm = tok:match("^(%a+):")
+      WindowText(WIN, "f", tok, x, ly, 0, 0, (nm and FX[nm]) or C.warn)
+      x = x + (#tok + 1) * 7
+      if x > W - 60 then break end
+    end
+    nl()
+  end
+end
+
+local function draw_city(my, vmip)
+  header("-- Settlement --")
+  txt(10, string.format("Daler %s   Blot %s   Sproj %s   Sact %s",
+    vmip.DALER or "?", (vmip.BLOT or "?"):sub(1, 14), vmip.SPROJ or "?", vmip.SACTIONS or "?")); nl()
+  nl(4)
+  header("-- Ships --")
+  local ships = split(vmip.SHIPS or "", ";")
+  if #ships == 0 then txt(10, "none", C.dim); nl()
+  else
+    for i = 1, math.min(#ships, 6) do
+      local f = split(ships[i], "|")
+      local eta = tonumber(f[5]) and (math.floor(num(f[5]) / 60) .. "m") or ""
+      local line = string.format("%-13s %-9s %-13s %s", f[1] or "?", f[3] or "?", f[4] or "", eta)
+      txt(10, line, (f[3] == "raiding") and C.bad or C.text); nl()
+    end
+  end
+  nl(4)
+  header("-- Carts --")
+  local carts = split(vmip.CARTS or "", ";")
+  if #carts == 0 then txt(10, "no carts out", C.dim); nl()
+  else
+    for i = 1, math.min(#carts, 4) do
+      local f = split(carts[i], "|")
+      local eta = f[4] and (math.floor(num(f[4]) / 60) .. "m") or "?"
+      txt(10, string.format("%-4s %-10s -> %-16s %5s  x%s", f[1] or "?", f[2] or "?", f[3] or "?", eta, f[5] or "?")); nl()
+    end
+  end
+  nl(4)
+  -- warehouse with freshness bars
+  local wb = (vmip.BUILDINGS or "") .. ","
+  local tier = wb:match("warehouse:(%d+),") or "1"
+  local wmax = ({ ["1"]=150, ["2"]=500, ["3"]=1000, ["4"]=2000, ["5"]=4000 })[tier] or 150
+  -- one row per good: total amount, avg-quality bar, stale batches noted
+  local byg, tot = {}, 0
+  for _, e in ipairs(split(vmip.WSTOCK or "", ";")) do
+    local f = split(e, "|")
+    if f[1] then
+      local amt, q = num(f[2]), tonumber(f[3]) or 100
+      local g = byg[f[1]]
+      if not g then g = { amt = 0, qsum = 0, minq = 100, stale = 0 }; byg[f[1]] = g end
+      g.amt = g.amt + amt
+      g.qsum = g.qsum + q * amt
+      if q < 100 then
+        g.stale = g.stale + amt
+        if q < g.minq then g.minq = q end
+      end
+      tot = tot + amt
+    end
+  end
+  local stock = {}
+  for good, g in pairs(byg) do stock[#stock + 1] = { good = good, g = g } end
+  table.sort(stock, function(a, b) return a.good < b.good end)
+  header(string.format("-- Warehouse  %d / %d --", tot, wmax))
+  if #stock == 0 then txt(10, "empty", C.dim); nl()
+  else
+    for _, f in ipairs(stock) do
+      local g = f.g
+      local avgq = g.amt > 0 and math.floor(g.qsum / g.amt + 0.5) or 100
+      txt(10, string.format("%-10s %4d", f.good, g.amt))
+      WindowRectOp(WIN, 2, 150, ly + 1, 330, ly + 12, C.panel)
+      local fill = math.floor(178 * math.min(avgq, 100) / 100)
+      if fill > 0 then WindowRectOp(WIN, 2, 151, ly + 2, 151 + fill, ly + 11, grad(avgq)) end
+      WindowRectOp(WIN, 1, 150, ly + 1, 330, ly + 12, C.border)
+      if g.stale > 0 then
+        txt(338, string.format("%d@%d%%", g.stale, g.minq), C.bad)
+      else
+        txt(338, "100%", C.dim)
+      end
+      nl(15)
+    end
+  end
+  nl(4)
+  header("-- Buildings --")
+  local blist = {}
+  for entry in (vmip.BUILDINGS or ""):gmatch("[^,]+") do
+    local name, tier = entry:match("^(.-):(%d+)$")
+    if name then
+      name = name:gsub("_", " "):gsub("(%a)([%w]*)", function(a, b) return a:upper() .. b end)
+      blist[#blist + 1] = name .. " T" .. tier
+    end
+  end
+  if #blist == 0 then
+    txt(10, "none", C.dim); nl()
+  else
+    -- two columns, like the in-game display
+    local rows = math.ceil(#blist / 2)
+    for i = 1, rows do
+      WindowText(WIN, "f", blist[i] or "", 10, ly, 0, 0, C.text)
+      WindowText(WIN, "f", blist[i + rows] or "", 286, ly, 0, 0, C.text)
+      nl(13)
+    end
+  end
+  local builds = split(vmip.BUILDS or "", ";")
+  if #builds > 0 then
+    for i = 1, math.min(#builds, 3) do
+      local f = split(builds[i], "|")
+      local mins = f[5] and (math.floor(num(f[5]) / 60) .. "m left") or "?"
+      txt(10, string.format("constr: %-14s %s  %s", f[1] or "?", mins, f[7] or ""), C.warn); nl()
+    end
+  end
+end
+
+local function draw_people(my, vmip)
+  header("-- Settlers --")
+  local s = split(vmip.SETTLERS or "", "|")
+  txt(10, string.format("Population %s   Tax %s   Mood %s", s[1] or "?", s[2] or "?", s[4] or "?")); nl()
+  local mood = tonumber(s[4])
+  if mood then
+    WindowRectOp(WIN, 2, 150, ly + 1, 400, ly + 12, C.panel)
+    local fill = math.floor(248 * math.min(mood, 100) / 100)
+    if fill > 0 then WindowRectOp(WIN, 2, 151, ly + 2, 151 + fill, ly + 11, grad(mood)) end
+    WindowRectOp(WIN, 1, 150, ly + 1, 400, ly + 12, C.border)
+    nl(16)
+  end
+  nl(4)
+  header("-- Forces --")
+  txt(10, string.format("Thralls %s   Followers %s", vmip.THRALLS or "?", (vmip.THRALL_FOLLOWER or "?"):sub(1, 30))); nl()
+  txt(10, string.format("Garrison %s   Threk %s", vmip.GARRISON or "?", vmip.MTHREK or "?")); nl()
+  nl(4)
+  header("-- Hird --")
+  local hird = split(vmip.HIRD or "", ";")
+  if #hird == 0 then txt(10, "no hird", C.dim); nl()
+  else
+    for i = 1, math.min(#hird, 6) do
+      local f = split(hird[i], "|")
+      txt(10, string.format("%-16s %-14s %s/%s/%s/%s  %s  %s",
+        f[2] or "?", f[3] or "?", f[4] or "?", f[5] or "?", f[6] or "?", f[7] or "?", f[9] or "?", f[10] or "?")); nl()
+    end
+  end
+  nl(4)
+  header("-- Staff --")
+  local staff = split(vmip.STAFF or "", ";")
+  if #staff == 0 then txt(10, "no staff hired", C.dim); nl()
+  else
+    for i = 1, math.min(#staff, 8) do
+      local f = split(staff[i], "|")
+      txt(10, string.format("%-16s %-13s %-6s %s", f[1] or "?", f[2] or "?", f[3] or "?", f[4] or "")); nl(13)
+    end
+  end
+end
+
+local function draw_goods(my, vmip)
+  header("-- Goods: best places to buy & sell --")
+  local vrep = parse_idx_table(vmip.VREP)
+  local entries = split(vmip.TGOODS or "", "|")
+  if #entries == 0 then
+    txt(10, "(no trade feed - vtoggle mip_trade_goods)", C.dim); nl()
+    return
+  end
+  -- collect per-good lists: { town, lvl, sup, dem }
+  local per = {}
+  for _, e in ipairs(entries) do
+    local idx, goods = e:match("^(%d+)=(.*)$")
+    if idx then
+      local name = (vrep[tonumber(idx)] or {})[2] or ("Hold " .. idx)
+      for _, gd in ipairs(split(goods, ";")) do
+        local l, lvl, sup, dem = gd:match("^(%a):(%-?%d+):(%d+):(%d+)$")
+        if l then
+          per[l] = per[l] or {}
+          per[l][#per[l] + 1] = { town = name, lvl = tonumber(lvl),
+                                  sup = tonumber(sup), dem = tonumber(dem) }
+        end
+      end
+    end
+  end
+  txt(10, "good", C.dim)
+  txt(86, "-- buy at (top supply) --", C.good)
+  txt(318, "-- sell at (top demand) --", C.warn)
+  nl(16)
+  local order = { "t", "i", "g", "f", "h", "m", "a", "r", "s" }
+  local XS, XD = { 86, 202 }, { 318, 434 }
+  local function rank2(x, list, key, vcol)
+    for i = 1, 2 do
+      local r = list[i]
+      if r and r[key] > 0 then
+        txt(x[i], r.town:sub(1, 8), C.text)
+        -- demand-cycle trend between town and value
+        if r.lvl and r.lvl ~= 0 then
+          local marks = string.rep(r.lvl > 0 and "+" or "-", math.min(math.abs(r.lvl), 3))
+          txt(x[i] + 60, marks, r.lvl > 0 and C.good or C.bad)
+        end
+        txt(x[i] + 84, string.format("%4d", r[key]), vcol)
+      else
+        txt(x[i], "-", C.dim)
+      end
+    end
+  end
+  for _, l in ipairs(order) do
+    local list = per[l]
+    if list and #list > 0 then
+      txt(10, (GOODS_NAME[l] or l):sub(1, 8), C.label)
+      local bysup, bydem = {}, {}
+      for i, r in ipairs(list) do bysup[i] = r; bydem[i] = r end
+      table.sort(bysup, function(a, b)
+        if a.sup ~= b.sup then return a.sup > b.sup end
+        return a.dem < b.dem
+      end)
+      table.sort(bydem, function(a, b)
+        if a.dem ~= b.dem then return a.dem > b.dem end
+        return a.sup < b.sup
+      end)
+      rank2(XS, bysup, "sup", C.good)
+      rank2(XD, bydem, "dem", C.warn)
+      nl(15)
+    end
+  end
+  nl(6)
+  txt(10, "supply = stock on hand (buy cheap)   demand = shortage (sell high)", C.dim); nl()
+  txt(10, "+/- = demand cycle trend for that good in that hold", C.dim); nl()
+end
+
+local function draw_holds(my, vmip)
+  header("-- Holds: standing & reputation --")
+  local vrep = parse_idx_table(vmip.VREP)
+  local stand = parse_idx_table(vmip.STANDINGS)
+  WindowText(WIN, "f", string.format("%-16s %-10s %6s %6s", "Hold", "Standing", "Bond", "Rep"), 10, ly, 0, 0, C.dim); nl()
+  for i = 0, 20 do
+    local v, s = vrep[i], stand[i]
+    if v or s then
+      local name = (v and v[2]) or (s and s[2]) or ("?" .. i)
+      local standing = (s and s[4]) or "-"
+      local scol = standing == "Friendly" and C.good or (standing == "Hostile" and C.bad or C.label)
+      WindowText(WIN, "f", string.format("%-16s", name:sub(1, 16)), 10, ly, 0, 0, C.text)
+      WindowText(WIN, "f", string.format("%-10s", standing), 129, ly, 0, 0, scol)
+      WindowText(WIN, "f", string.format("%6s %6s", (s and s[3]) or "-", (v and v[3]) or "-"), 204, ly, 0, 0, C.label)
+      nl(13)
+    end
+  end
+  nl(8)
+  header("-- War status --")
+  local blot = split(vmip.BLOT or "", "|")
+  txt(10, string.format("Blot %s   pool %s   (%s/%s)", blot[1] or "?", blot[2] or "?", blot[3] or "?", blot[4] or "?")); nl()
+  local raid = split(vmip.RAID or "", "|")
+  txt(10, string.format("Raid %s %s %s   Garrison %s", raid[1] or "?", raid[2] or "", raid[3] or "", vmip.GARRISON or "?")); nl()
+  txt(10, string.format("Monuments %s   Varangians %s", vmip.MONUMENTS or "?",
+    (vmip.VARANG == "^" or vmip.VARANG == "") and "none" or (vmip.VARANG or "?"))); nl()
+end
+
+-- voyage chart char -> colour (BGR)
+local SEACHART = {
+  ["#"] = 0x303030,                     -- unrevealed
+  ["O"] = 0xD0A000, ["~"] = 0xD0A000,   -- open sea
+  ["F"] = 0x909090,                     -- fog
+  ["?"] = 0x505050,                     -- unknown
+  ["I"] = 0x20C0C0,                     -- island
+  ["H"] = 0x40C040,                     -- harbor
+  ["W"] = 0x4040E0,                     -- wreck
+  ["T"] = 0x5050F0,                     -- storm
+  ["X"] = 0xE060E0,                     -- objective
+  ["S"] = 0xFFFFFF,                     -- your ship
+  ["+"] = 0x60E060, [">"] = 0x60E0E0,   -- queued path / destination
+  ["="] = 0xD06000,                     -- crosscurrent
+}
+local SEALETTER = { S = true, X = true, H = true, W = true, T = true, I = true, [">"] = true }
+
+local function draw_sea(my, vmip)
+  local v = split(vmip.VOYAGE or "", "|")
+  if #v < 10 then
+    header("-- Sea --")
+    txt(10, "No voyage under way.", C.dim); nl()
+    local ships = split(vmip.LONGSHIP or vmip.SHIPS or "", ";")
+    if #ships > 0 then
+      nl(4)
+      header("-- Fleet --")
+      for i = 1, math.min(#ships, 6) do
+        local f = split(ships[i], "|")
+        txt(10, string.format("%-13s %-9s %s", f[2] or f[1] or "?", f[4] or f[3] or "?", f[5] or f[4] or "")); nl()
+      end
+    end
+    return
+  end
+  header(string.format("-- Voyage: %s - %s (%s) --", v[3] or "?", v[4] or "?", v[5] or "?"))
+  -- left column: text facts / right column: condition bars
+  local top = ly
+  txt(10, string.format("State:    %s", v[1] or "?")); nl()
+  txt(10, string.format("Position: %s,%s", v[6] or "?", v[7] or "?")); nl()
+  txt(10, string.format("Threat:   %s [%s]", v[19] or "-", v[20] or "?")); nl()
+  txt(10, string.format("Pressure: %s   Danger: %s", v[21] or "?", v[8] or "?")); nl()
+  txt(10, string.format("Captain:  %s", v[25] or "?")); nl()
+  txt(10, string.format("Identity: %s", v[26] or "?")); nl()
+  txt(10, ("Traits:   " .. (v[27] or "") .. ", " .. (v[28] or "")):sub(1, 40), C.dim); nl()
+  local bottom = ly
+  ly = top
+  local function seabar(label, val, invert)
+    local n = num(val)
+    local pct = invert and (100 - n) or n
+    WindowText(WIN, "f", label, 300, ly, 0, 0, C.label)
+    WindowRectOp(WIN, 2, 366, ly + 1, 496, ly + 12, C.panel)
+    local fill = math.floor(128 * math.min(math.max(pct, 0), 100) / 100)
+    if fill > 0 then WindowRectOp(WIN, 2, 367, ly + 2, 367 + fill, ly + 11, grad(pct)) end
+    WindowRectOp(WIN, 1, 366, ly + 1, 496, ly + 12, C.border)
+    WindowText(WIN, "f", n .. "%", 502, ly + 1, 0, 0, C.text)
+    nl()
+  end
+  seabar("Hull",     v[11])
+  seabar("Morale",   v[12])
+  seabar("Supplies", v[13])
+  seabar("Stress",   v[14], true)
+  WindowText(WIN, "f", string.format("Crew %s/%s", v[15] or "?", v[16] or "?"), 300, ly, 0, 0, C.text); nl()
+  local wx = split(vmip.WEATHER or "", "|")
+  WindowText(WIN, "f", string.format("Weather: %s/%s", wx[1] or "?", wx[2] or "?"), 300, ly, 0, 0, C.dim); nl()
+  ly = math.max(ly, bottom) + 4
+  -- chart
+  local ch = split(vmip.VCHH or "", "|")
+  local cw, chh = num(ch[1]), num(ch[2])
+  if cw > 0 then
+    header(string.format("-- Chart %dx%d  (%s) --", cw, chh, ch[3] or "?"))
+    local bs = math.max(8, math.min(16, math.floor(380 / math.max(cw, 1))))
+    local x0, y0 = 14, ly + 2
+    local unknown = {}
+    for row = 0, chh - 1 do
+      local rowstr = vmip[string.format("VCR%02d", row)]
+      if rowstr then
+        for col = 1, math.min(#rowstr, cw) do
+          local c = rowstr:sub(col, col)
+          local colr = SEACHART[c]
+          if not colr then colr = 0x404040; unknown[c] = true end
+          WindowRectOp(WIN, 2, x0 + (col - 1) * bs, y0 + row * bs, x0 + col * bs - 1, y0 + (row + 1) * bs - 1, colr)
+          if SEALETTER[c] then
+            WindowText(WIN, "fb", c, x0 + (col - 1) * bs + math.floor(bs / 2) - 4, y0 + row * bs + math.floor(bs / 2) - 7, 0, 0, c == "S" and 0x000000 or 0xFFFFFF)
+          end
+        end
+      end
+    end
+    WindowRectOp(WIN, 1, x0 - 1, y0 - 1, x0 + cw * bs + 1, y0 + chh * bs + 1, C.border)
+    -- legend beside the chart
+    local lx = x0 + cw * bs + 14
+    local lyy = y0
+    for _, lg in ipairs({ {"S ship",0xFFFFFF}, {"X objective",0xE060E0}, {"H harbor",0x40C040},
+                          {"W wreck",0x4040E0}, {"T storm",0x5050F0}, {"I island",0x20C0C0},
+                          {"F fog",0x909090}, {"# unrevealed",0x303030}, {"O open sea",0xD0A000} }) do
+      WindowRectOp(WIN, 2, lx, lyy + 2, lx + 8, lyy + 10, lg[2])
+      WindowText(WIN, "f", lg[1], lx + 12, lyy, 0, 0, C.dim)
+      lyy = lyy + 14
+    end
+    ly = y0 + chh * bs + 6
+    local u = {}
+    for c in pairs(unknown) do u[#u + 1] = c end
+    if #u > 0 then
+      table.sort(u)
+      txt(10, "unmapped chart chars: " .. table.concat(u, " ") .. "  (tell Claude)", C.dim); nl(13)
+    end
+  end
+  -- saga
+  local saga = split(vmip.VSAGA or "", ";")
+  if #saga > 0 then
+    header("-- Saga --")
+    for i = math.max(1, #saga - 2), #saga do
+      if ly > H - 16 then break end
+      txt(10, saga[i]:sub(1, 74), C.dim); nl(13)
+    end
+  end
+end
+
+local function draw_map(my, vmip)
+  local hd = split(vmip.VMAPH or "", "|")
+  local mw, mh, px, py = num(hd[1]), num(hd[2]), num(hd[3]), num(hd[4])
+  if mw == 0 then
+    txt(10, "(no map feed - run vmapon)", C.dim); nl()
+    return
+  end
+  header(string.format("-- Territory %dx%d  @ %d,%d --", mw, mh, px, py))
+  -- legend
+  local legend = { {"Tund",0x606060},{"Hill",0x20C0C0},{"Mtn",0x3030D0},{"Frst",0x208020},
+                   {"Plns",0x60C060},{"Watr",0xD0A000},{"Road",0x181818},{"Gate",0x909090},
+                   {"Lin",0x2080E0},{"Set",0x40C0E0},{"You",0xFFFFFF} }
+  local lx = 10
+  for _, lg in ipairs(legend) do
+    WindowRectOp(WIN, 2, lx, ly + 2, lx + 8, ly + 10, lg[2])
+    WindowText(WIN, "f", lg[1], lx + 10, ly, 0, 0, C.dim)
+    lx = lx + 10 + #lg[1] * 7 + 7
+  end
+  nl(16)
+  local bs = math.max(4, math.min(10, math.floor(520 / math.max(mw, 1))))
+  local x0, y0 = 14, ly + 2
+  local unknown = {}
+  local POI_LABEL = { L = "Lin", S = "Set", C = "Cap", ["*"] = "POI", R = "Ruin", M = "Cap" }
+  local pois = {}
+  for row = 0, mh - 1 do
+    local rowstr = vmip[string.format("VMR%02d", row)]
+    local mask = vmip[string.format("MEE%02d", row)]
+    if rowstr then
+      for col = 1, math.min(#rowstr, mw) do
+        local ch = rowstr:sub(col, col)
+        local colr = TERRAIN[ch]
+        if not colr then colr = 0x282828; unknown[ch] = true end
+        if mask and mask:sub(col, col) == "0" then colr = 0x000000 end
+        WindowRectOp(WIN, 2, x0 + (col - 1) * bs, y0 + row * bs, x0 + col * bs, y0 + (row + 1) * bs, colr)
+        if POI_LABEL[ch] then pois[#pois + 1] = { x = col - 1, y = row, ch = ch } end
+      end
+    end
+  end
+  -- hover a town for its type, name and coordinates
+  local locs = parse_locs(vmip.VMAPL)
+  local feednames = {}
+  for _, lc in ipairs(locs) do feednames[lc.x .. "|" .. lc.y] = lc.name end
+  for _, p in ipairs(pois) do
+    local key = p.x .. "|" .. p.y
+    local label = (POI_LABEL[p.ch] or "?") .. " (" .. p.x .. "," .. p.y .. ")"
+    local nm = locname(p.x, p.y) or feednames[key]
+    if nm then label = nm .. "  -  " .. label end
+    WindowAddHotspot(WIN, "poi_" .. key, x0 + p.x * bs, y0 + p.y * bs,
+                     x0 + (p.x + 1) * bs, y0 + (p.y + 1) * bs, "", "", "", "", "", label, 0, 0)
+  end
+  -- location markers
+  for _, lc in ipairs(locs) do
+    if lc.x >= 0 and lc.x < mw and lc.y >= 0 and lc.y < mh then
+      WindowRectOp(WIN, 1, x0 + lc.x * bs - 1, y0 + lc.y * bs - 1,
+                   x0 + (lc.x + 1) * bs + 1, y0 + (lc.y + 1) * bs + 1, loc_color(lc.type))
+    end
+  end
+  -- player marker
+  WindowRectOp(WIN, 2, x0 + px * bs - 1, y0 + py * bs - 1, x0 + (px + 1) * bs + 1, y0 + (py + 1) * bs + 1, 0xFFFFFF)
+  WindowRectOp(WIN, 1, x0 - 1, y0 - 1, x0 + mw * bs + 1, y0 + mh * bs + 1, C.border)
+  ly = y0 + mh * bs + 6
+  -- merged list: feed-named locations + towns scanned from the grid
+  local merged, seen = {}, {}
+  for _, lc in ipairs(locs) do
+    seen[lc.x .. "|" .. lc.y] = true
+    lc.name = locname(lc.x, lc.y) or lc.name
+    merged[#merged + 1] = lc
+  end
+  for _, p in ipairs(pois) do
+    local key = p.x .. "|" .. p.y
+    if not seen[key] then
+      seen[key] = true
+      merged[#merged + 1] = { type = POI_LABEL[p.ch], name = locname(p.x, p.y), x = p.x, y = p.y }
+    end
+  end
+  -- known locations always listed, even with no marker on the map
+  local known = {}
+  for key in pairs(TRAVEL_CODE) do known[key] = true end
+  for key in pairs(DEFAULT_LOCNAMES) do known[key] = true end
+  for key in pairs(known) do
+    if not seen[key] then
+      local x, y = key:match("^(%-?%d+)|(%-?%d+)$")
+      local typ
+      if TRAVEL_CODE[key] then typ = (key == "32|16") and "Cap" or "Lin"
+      else typ = DEFAULT_LOCTYPE[key] or "POI" end
+      merged[#merged + 1] = { type = typ,
+                              name = locname(tonumber(x), tonumber(y)),
+                              x = tonumber(x), y = tonumber(y) }
+    end
+  end
+  if #merged > 0 then
+    local function rank(e)
+      if TRAVEL_CODE[e.x .. "|" .. e.y] then return 1 end
+      if e.name then return 2 end
+      return 3
+    end
+    table.sort(merged, function(a, b)
+      local ra, rb = rank(a), rank(b)
+      if ra ~= rb then return ra < rb end
+      if a.name and b.name then return a.name < b.name end
+      if a.y ~= b.y then return a.y < b.y end
+      return a.x < b.x
+    end)
+    header("-- Locations  (click a town to walk there) --")
+    local colx, coltop = 10, ly
+    local maxly = ly
+    for _, lc in ipairs(merged) do
+      if ly > H - 29 then
+        if colx == 10 then
+          maxly = math.max(maxly, ly)
+          colx = 286; ly = coltop
+        else
+          break
+        end
+      end
+      local t = (lc.type or "?"):gsub("_.*$", "")
+      t = t:sub(1, 1):upper() .. t:sub(2)
+      local key2 = lc.x .. "|" .. lc.y
+      local clickable = TRAVEL_CODE[key2] ~= nil
+      WindowText(WIN, "f", t, colx, ly, 0, 0, loc_color(lc.type))
+      WindowText(WIN, "f", string.format("%-14s (%d,%d)", (lc.name or "-"):sub(1, 14), lc.x, lc.y),
+                 colx + 50, ly, 0, 0, clickable and 0x40E0E0 or (lc.name and C.label or C.dim))
+      if clickable then
+        WindowAddHotspot(WIN, "trav_" .. key2, colx, ly, colx + 264, ly + 12,
+          "", "", "vik_travel_click", "", "",
+          "Click: walk to " .. (lc.name or "here") .. "   Right-click: I am here", 1, 0)
+      end
+      nl(13)
+    end
+    ly = math.max(maxly, ly)
+  end
+  local u = {}
+  for ch in pairs(unknown) do u[#u + 1] = ch end
+  if #u > 0 then
+    table.sort(u)
+    txt(10, "unmapped terrain chars: " .. table.concat(u, " ") .. "  (tell Claude)", C.dim); nl(13)
+  end
+end
+
+local function draw_feeds(my, vmip)
+  header("-- Live feed keys (for building more tabs) --")
+  local keys = {}
+  for k in pairs(vmip) do
+    if not k:match("^VMR%d") and not k:match("^MEE%d") and not k:match("^MES%d") and not k:match("^VCR%d") then
+      keys[#keys + 1] = k
+    end
+  end
+  table.sort(keys)
+  local top, x = ly, 10
+  for _, k in ipairs(keys) do
+    if ly > H - 16 then
+      if x == 10 then x = 286; ly = top else txt(x, "...", C.dim) break end
+    end
+    local v = vmip[k]
+    txt(x, string.format("%-13s %s", k:sub(1, 13), v:sub(1, 24)), #v > 0 and C.text or C.dim); nl(13)
+  end
+end
+
+-- ---------------- main draw ----------------
+function vik_draw()
+  if not visible then return end
+  local my, vmip = getvars()
+  if not windowinfo then
+    windowinfo = movewindow.install(WIN, 6, 0)
+  end
+  WindowCreate(WIN, windowinfo.window_left, windowinfo.window_top, W, H,
+               windowinfo.window_mode, windowinfo.window_flags, C.bg)
+  WindowFont(WIN, "f",  "Lucida Console", 9, false, false, false, false)
+  WindowFont(WIN, "fb", "Lucida Console", 9, true,  false, false, false)
+  WindowRectOp(WIN, 1, 0, 0, W, H, C.border)
+  -- title bar (drag)
+  WindowRectOp(WIN, 2, 1, 1, W - 1, 18, C.title)
+  WindowText(WIN, "fb", "Viking Status", math.floor(W / 2) - 45, 3, 0, 0, C.head)
+  movewindow.add_drag_handler(WIN, 0, 0, W, 18, miniwin.cursor_hand)
+  -- tabs
+  local tw = math.floor((W - 2) / #TABS)
+  for i, t in ipairs(TABS) do
+    local x1 = 1 + (i - 1) * tw
+    local sel = (t == tab)
+    WindowRectOp(WIN, 2, x1, 19, x1 + tw - 1, 37, sel and C.tabsel or C.tabbg)
+    WindowRectOp(WIN, 1, x1, 19, x1 + tw - 1, 37, C.border)
+    WindowText(WIN, sel and "fb" or "f", t, x1 + math.floor(tw / 2) - #t * 4, 23, 0, 0, sel and C.head or C.label)
+    WindowAddHotspot(WIN, "tab_" .. t, x1, 19, x1 + tw - 1, 37, "", "", "vik_tabclick", "", "", t, 1, 0)
+  end
+  ly = 44
+  if     tab == "Stats"  then draw_stats(my, vmip)
+  elseif tab == "City"   then draw_city(my, vmip)
+  elseif tab == "People" then draw_people(my, vmip)
+  elseif tab == "Goods"  then draw_goods(my, vmip)
+  elseif tab == "Holds"  then draw_holds(my, vmip)
+  elseif tab == "Sea"    then draw_sea(my, vmip)
+  elseif tab == "Map"    then draw_map(my, vmip)
+  elseif tab == "Feeds"  then draw_feeds(my, vmip)
+  end
+  WindowShow(WIN, true)
+end
+
+function vik_tabclick(flags, id)
+  tab = id:sub(5)
+  SetVariable("tab", tab)
+  vik_draw()
+end
+
+function vik_settab(name)
+  name = name:sub(1, 1):upper() .. name:sub(2):lower()
+  for _, t in ipairs(TABS) do
+    if t == name then tab = t; SetVariable("tab", tab); vik_draw(); return end
+  end
+  Note("[viking] no tab '" .. name .. "' (Stats City People Map Feeds)")
+end
+
+function vik_dump()
+  local dir = GetPluginInfo(GetPluginID(), 20)
+  local path = dir .. "vmip_dump.txt"
+  local f = io.open(path, "w")
+  if not f then Note("[viking] could not write " .. path) return end
+  local my, vmip = getvars()
+  local keys = {}
+  for k in pairs(vmip) do keys[#keys + 1] = k end
+  table.sort(keys)
+  f:write("vmip dump " .. os.date() .. "\n")
+  for _, k in ipairs(keys) do
+    f:write(k .. " = " .. vmip[k] .. "\n")
+  end
+  f:close()
+  Note("[viking] full feed written to " .. path)
+end
+
+function vik_toggle()
+  visible = not visible
+  SetVariable("visible", visible and "1" or "0")
+  if visible then vik_draw() else WindowShow(WIN, false) end
+  Note("[viking] window " .. (visible and "shown" or "hidden"))
+end
+
+function OnPluginBroadcast(msg, id, name, text)
+  if id == MIP_ID then vik_draw() end
+end
+
+function vik_tick(state)
+  if state == "on" then
+    AddTimer("viking_keepalive", 0, 5, 0, "l", timer_flag.Enabled + timer_flag.Replace, "")
+    SetVariable("tick", "1")
+  else
+    EnableTimer("viking_keepalive", false)
+    SetVariable("tick", "0")
+  end
+  Note("[viking] keepalive 'l' every 5 min: " .. state)
+end
+
+function OnPluginSaveState()
+  if windowinfo then movewindow.save_state(WIN) end
+  SetVariable("visible", visible and "1" or "0")
+  SetVariable("tab", tab)
+end
+
+function OnPluginInstall()
+  AddTimer("viking_keepalive", 0, 5, 0, "l", timer_flag.Replace, "")
+  if GetVariable("tick") == "1" then EnableTimer("viking_keepalive", true) end
+  vik_draw()
+end
+
+function OnPluginEnable()  vik_draw() end
+function OnPluginDisable() WindowShow(WIN, false) end
+]]>
+</script>
+</muclient>

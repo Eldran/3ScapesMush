@@ -1,0 +1,300 @@
+<?xml version="1.0" encoding="iso-8859-1"?>
+<!DOCTYPE muclient>
+<muclient>
+<plugin
+   name="ThreeS_Chat"
+   author="Joakim"
+   id="4d5e6f7a8b9c0d1e2f3a4b5c"
+   language="Lua"
+   purpose="Chat capture window: channels + tells in a draggable miniwindow"
+   date_written="2026-06-10"
+   requires="4.73"
+   version="1.0"
+   save_state="y"
+>
+<description><![CDATA[
+Captures all chat channels and tells (via the ThreeS_MIP feed) into a
+draggable window with timestamps, channel colours and scrollback.
+Also appends everything to 3s_chat.log next to the plugin.
+
+Commands:
+  chatwin               show/hide the window
+  chat clear            clear the buffer
+  chat watch <name>     bell + highlight when <name> appears
+  chat unwatch <name>   stop watching
+  chat watched          list watch names
+  chatsize <w> <h>      resize the window (default 682x273)
+Buttons: Up / Dn / End scroll, Clr clears, X hides.
+]]>
+</description>
+</plugin>
+
+<aliases>
+  <alias match="^chatwin$" enabled="y" regexp="y" send_to="12" sequence="100"><send>chat_toggle()</send></alias>
+  <alias match="^chat clear$" enabled="y" regexp="y" send_to="12" sequence="100"><send>chat_clear()</send></alias>
+  <alias match="^chat watch (.+)$" enabled="y" regexp="y" send_to="12" sequence="100"><send>chat_watch("%1", true)</send></alias>
+  <alias match="^chat unwatch (.+)$" enabled="y" regexp="y" send_to="12" sequence="100"><send>chat_watch("%1", false)</send></alias>
+  <alias match="^chat watched$" enabled="y" regexp="y" send_to="12" sequence="100"><send>chat_watched()</send></alias>
+  <alias match="^chatup$" enabled="y" regexp="y" send_to="12" sequence="100"><send>chat_page(1)</send></alias>
+  <alias match="^chatdown$" enabled="y" regexp="y" send_to="12" sequence="100"><send>chat_page(-1)</send></alias>
+  <alias match="^chatend$" enabled="y" regexp="y" send_to="12" sequence="100"><send>chat_page(0)</send></alias>
+  <alias match="^chatsize (\d+) (\d+)$" enabled="y" regexp="y" send_to="12" sequence="100"><send>chat_size(%1, %2)</send></alias>
+</aliases>
+
+<script>
+<![CDATA[
+require "movewindow"
+
+local MIP_ID = "9a8b3c5d1e2f4a6b8c0d2e4f"
+local WIN = "chatwin_" .. GetPluginID()
+local W = tonumber(GetVariable("w")) or 682
+local H = tonumber(GetVariable("h")) or 273
+local MAXLINES = 300
+local windowinfo
+local visible = (GetVariable("visible") ~= "0")
+local buffer = {}      -- { time=, chan=, text= }
+local page = 0         -- 0 = live tail, 1+ = pages back
+local watches = {}
+
+local C = {
+  bg = 0x141414, border = 0x604020, title = 0x402818, head = 0x40C0FF,
+  text = 0xE0E0E0, dim = 0x808080, time = 0xA08040, watch = 0x40C0FF,
+  btn = 0x402818, btntext = 0xE0C8A0,
+}
+
+local CHANCOL = {
+  Tell = 0x40D0FF, Main = 0x5050F0, Party = 0x50D050, Newbie = 0x40C0C0,
+  Shout = 0xE0E0E0, ADMIN = 0xE050E0, Events = 0xD0D040, Viking = 0xD0D000,
+  Whine = 0x5050F0, Gamers = 0xD0A040, Lottery = 0xC0C0C0, Poll = 0xC0C0C0,
+}
+local function chancol(c)
+  if CHANCOL[c] then return CHANCOL[c] end
+  if c:find("Viking") then return 0xD0D000 end
+  return 0xB0B0B0
+end
+
+local function logfile()
+  return GetPluginInfo(GetPluginID(), 20) .. "3s_chat.log"
+end
+
+-- ---------------- buffer ----------------
+-- the mud embeds its own channel banner in the text; our coloured tag
+-- already says the channel, so strip the duplicate
+local function strip_banner(chan, text)
+  -- banner style:  -~* Viking *~-  /  -^^* Viking Announce *^^-
+  local rest = text:match("^%-[%~%^]+%*%s*.-%s*%*[%~%^]+%-%s*(.*)$")
+  if rest and #rest > 0 then return rest end
+  -- bracket style:  [PARTY] / [Viking-Trade]  (only when it names the channel)
+  local br, rest2 = text:match("^%[([%w%-%s]+)%]%s*(.*)$")
+  if br and #rest2 > 0 then
+    local a = br:lower():gsub("%W", "")
+    local c = chan:lower():gsub("%W", "")
+    if a ~= "" and c ~= "" and (a == c or a:find(c, 1, true) or c:find(a, 1, true)) then
+      return rest2
+    end
+  end
+  return text
+end
+
+local function addline(chan, text)
+  text = text:gsub("[%z\1-\31]", " ")
+  chan = chan:gsub("[%z\1-\31]", " ")
+  text = strip_banner(chan, text)
+  local entry = { time = os.date("%H:%M"), chan = chan, text = text }
+  buffer[#buffer + 1] = entry
+  if #buffer > MAXLINES then table.remove(buffer, 1) end
+  local f = io.open(logfile(), "a")
+  if f then
+    f:write(string.format("[%s] [%s] %s\n", os.date("%Y-%m-%d %H:%M:%S"), chan, text))
+    f:close()
+  end
+  for name in pairs(watches) do
+    if text:lower():find(name:lower(), 1, true) then
+      entry.watched = true
+      Sound("SysExclamation")
+      break
+    end
+  end
+  if page == 0 then chat_draw() end
+end
+
+-- wrap text into rows of width n
+local function wrap(s, n)
+  local rows = {}
+  while #s > n do
+    rows[#rows + 1] = s:sub(1, n)
+    s = s:sub(n + 1)
+    if #rows >= 3 then break end
+  end
+  if #s > 0 then rows[#rows + 1] = s end
+  return rows
+end
+
+-- ---------------- window ----------------
+local buttons = {
+  { id = "c_up",  label = "Up"  },
+  { id = "c_dn",  label = "Dn"  },
+  { id = "c_end", label = "End" },
+  { id = "c_clr", label = "Clr" },
+  { id = "c_x",   label = "X"   },
+}
+
+function chat_button(flags, id)
+  if     id == "c_up"  then chat_page(1)
+  elseif id == "c_dn"  then chat_page(-1)
+  elseif id == "c_end" then chat_page(0)
+  elseif id == "c_clr" then chat_clear()
+  elseif id == "c_x"   then chat_toggle()
+  end
+end
+
+function chat_draw()
+  if not visible then return end
+  if not windowinfo then
+    windowinfo = movewindow.install(WIN, 7, 0)   -- default strip along bottom
+  end
+  WindowCreate(WIN, windowinfo.window_left, windowinfo.window_top, W, H,
+               windowinfo.window_mode, windowinfo.window_flags, C.bg)
+  WindowFont(WIN, "f",  "Lucida Console", 9, false, false, false, false)
+  WindowFont(WIN, "fb", "Lucida Console", 9, true,  false, false, false)
+  WindowRectOp(WIN, 1, 0, 0, W, H, C.border)
+  WindowRectOp(WIN, 2, 1, 1, W - 1, 17, C.title)
+  local title = "Chat"
+  if page > 0 then title = title .. "  (back " .. page .. " - End for live)" end
+  WindowText(WIN, "fb", title, 8, 3, 0, 0, C.head)
+  movewindow.add_drag_handler(WIN, 0, 0, W - 190, 17, miniwin.cursor_hand)
+  -- buttons in title bar
+  local bx = W - 188
+  for _, b in ipairs(buttons) do
+    local bw = 34
+    WindowRectOp(WIN, 2, bx, 2, bx + bw, 16, C.btn)
+    WindowRectOp(WIN, 1, bx, 2, bx + bw, 16, C.border)
+    WindowText(WIN, "f", b.label, bx + 17 - #b.label * 3, 3, 0, 0, C.btntext)
+    WindowAddHotspot(WIN, b.id, bx, 2, bx + bw, 16, "", "", "chat_button", "", "", b.label, 1, 0)
+    bx = bx + bw + 3
+  end
+  -- rows, bottom up
+  local rowh = 13
+  local nrows = math.floor((H - 24) / rowh)
+  local rows = {}   -- each: {time, chan, text, first, watched}
+  local skip = page * nrows
+  for i = #buffer, 1, -1 do
+    local e = buffer[i]
+    local wrapped = wrap(e.text, math.floor((W - 130) / 7))
+    for j = #wrapped, 1, -1 do
+      if skip > 0 then skip = skip - 1
+      else
+        table.insert(rows, 1, { time = e.time, chan = e.chan, text = wrapped[j],
+                                first = (j == 1), watched = e.watched })
+      end
+      if #rows >= nrows and skip == 0 then break end
+    end
+    if #rows >= nrows then break end
+  end
+  local y = H - 6 - rowh * #rows
+  for _, r in ipairs(rows) do
+    local x = 8
+    if r.first then
+      WindowText(WIN, "f", r.time, x, y, 0, 0, C.time)
+      x = x + 5 * 7 + 4
+      local tag = "[" .. r.chan:sub(1, 8) .. "]"
+      WindowText(WIN, "f", tag, x, y, 0, 0, chancol(r.chan))
+      x = x + #tag * 7 + 5
+    else
+      x = x + 5 * 7 + 4 + 10 * 7
+    end
+    WindowText(WIN, "f", r.text, x, y, 0, 0, r.watched and C.watch or C.text)
+    y = y + rowh
+  end
+  if #buffer == 0 then
+    WindowText(WIN, "f", "(no chat captured yet)", 8, 26, 0, 0, C.dim)
+  end
+  WindowShow(WIN, true)
+end
+
+-- ---------------- commands ----------------
+function chat_page(dir)
+  local nrows = math.floor((H - 24) / 13)
+  if dir == 0 then page = 0
+  else
+    page = math.max(0, page + dir)
+    local maxpage = math.max(0, math.floor((#buffer * 2 - 1) / nrows))
+    if page > maxpage then page = maxpage end
+  end
+  chat_draw()
+end
+
+function chat_size(w, h)
+  W = math.max(300, math.min(1600, w))
+  H = math.max(100, math.min(1200, h))
+  SetVariable("w", tostring(W))
+  SetVariable("h", tostring(H))
+  Note("[chat] window size " .. W .. "x" .. H)
+  chat_draw()
+end
+
+function chat_clear()
+  buffer = {}
+  page = 0
+  chat_draw()
+  Note("[chat] cleared")
+end
+
+function chat_toggle()
+  visible = not visible
+  SetVariable("visible", visible and "1" or "0")
+  if visible then chat_draw() else WindowShow(WIN, false) end
+  Note("[chat] window " .. (visible and "shown" or "hidden"))
+end
+
+function chat_watch(name, on)
+  if on then watches[name] = true else watches[name] = nil end
+  local t = {}
+  for n in pairs(watches) do t[#t + 1] = n end
+  SetVariable("watches", table.concat(t, "\n"))
+  Note("[chat] watching: " .. (#t > 0 and table.concat(t, ", ") or "(nobody)"))
+end
+
+function chat_watched()
+  local t = {}
+  for n in pairs(watches) do t[#t + 1] = n end
+  Note("[chat] watching: " .. (#t > 0 and table.concat(t, ", ") or "(nobody)"))
+end
+
+-- ---------------- wiring ----------------
+function OnPluginBroadcast(msg, id, name, text)
+  if id == MIP_ID and msg == 3 then
+    local chan, line = text:match("^(.-)\1(.*)$")
+    if chan then addline(chan, line) end
+  end
+end
+
+function OnPluginSaveState()
+  if windowinfo then movewindow.save_state(WIN) end
+  SetVariable("visible", visible and "1" or "0")
+  local out = {}
+  for i = math.max(1, #buffer - 99), #buffer do
+    local e = buffer[i]
+    out[#out + 1] = e.time .. "\t" .. e.chan .. "\t" .. e.text
+  end
+  SetVariable("buffer", table.concat(out, "\n"))
+end
+
+function OnPluginInstall()
+  local w = GetVariable("watches")
+  if w then for n in w:gmatch("[^\n]+") do watches[n] = true end end
+  local b = GetVariable("buffer")
+  if b and b ~= "" then
+    for entry in b:gmatch("[^\n]+") do
+      local t, chan, text = entry:match("^(.-)\t(.-)\t(.*)$")
+      if t then buffer[#buffer + 1] = { time = t, chan = chan, text = text } end
+    end
+  end
+  chat_draw()
+end
+
+function OnPluginEnable()  chat_draw() end
+function OnPluginDisable() WindowShow(WIN, false) end
+]]>
+</script>
+</muclient>

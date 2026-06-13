@@ -1,0 +1,491 @@
+<?xml version="1.0" encoding="iso-8859-1"?>
+<!DOCTYPE muclient>
+<muclient>
+<plugin
+   name="ThreeS_Mapper"
+   author="Joakim"
+   id="2a3b4c5d6e7f8a9b0c1d2e3f"
+   language="Lua"
+   purpose="Always-on area mapper with click-to-walk (replaces mapper.tin)"
+   date_written="2026-06-11"
+   requires="4.73"
+   version="1.0"
+   save_state="y"
+>
+<description><![CDATA[
+Maps wherever you walk, one map per named area, drawn in a draggable
+window. Click a room to walk there (step-confirmed BFS, like the chaos
+bot). Right-click a room = "I am here" (resync after teleports etc).
+Mapping auto-suspends while the area bot or chaos bot is driving.
+
+Commands:
+  mapper / mm           status + help
+  mm on | off           tracking on/off
+  mm area <name>        switch to (or create) the map for an area
+  mm list               list known maps
+  mm clear              wipe the current map
+  mm stop               abort click-walking
+  mm win                show/hide the window
+]]>
+</description>
+</plugin>
+
+<triggers>
+  <trigger enabled="y" name="map_room" regexp="y" match="^=S=(.*)=S=" send_to="12" sequence="22" keep_evaluating="y">
+  <send>map_on_room("%1")</send>
+  </trigger>
+  <trigger enabled="y" name="map_blocked" regexp="y" match="^You cannot go (\w+)\.$" send_to="12" sequence="26" keep_evaluating="y">
+  <send>map_blocked()</send>
+  </trigger>
+  <trigger enabled="y" name="map_wall" regexp="y" match="^You are unable to penetrate the wall that" send_to="12" sequence="26" keep_evaluating="y">
+  <send>map_blocked()</send>
+  </trigger>
+</triggers>
+
+<aliases>
+  <alias match="^(?:mapper|mm)(?:\s+(.*))?$" enabled="y" regexp="y" send_to="12" sequence="100">
+  <send>map_cmd("%1")</send>
+  </alias>
+</aliases>
+
+<script>
+<![CDATA[
+require "movewindow"
+
+local CHAOS_ID = "5e6f7a8b9c0d1e2f3a4b5c6d"
+local STEPPER_ID = "1f2e3d4c5b6a798887766554"
+local MIP_ID = "9a8b3c5d1e2f4a6b8c0d2e4f"
+
+local WIN = "mapper_" .. GetPluginID()
+local W, H = 340, 400
+local CELL = 14
+local windowinfo
+local visible = (GetVariable("visible") ~= "0")
+local tracking = (GetVariable("tracking") ~= "0")
+
+local maps = {}              -- maps[name][z][x][y] = { exits={}, short=... }
+local mapname = GetVariable("mapname") or "default"
+local pos = { x = 0, y = 0, z = 0 }
+local lost = false
+local pending = {}           -- moves awaiting their room line
+local pending_time = 0
+local plan = nil             -- click-walk: { dirs={}, idx=n }
+
+local DELTA = {
+  n = {0,1,0},  s = {0,-1,0}, e = {1,0,0},  w = {-1,0,0},
+  u = {0,0,1},  d = {0,0,-1},
+  ne = {1,1,0}, nw = {-1,1,0}, se = {1,-1,0}, sw = {-1,-1,0},
+  north = {0,1,0}, south = {0,-1,0}, east = {1,0,0}, west = {-1,0,0},
+  up = {0,0,1}, down = {0,0,-1},
+  northeast = {1,1,0}, northwest = {-1,1,0}, southeast = {1,-1,0}, southwest = {-1,-1,0},
+}
+
+local function note(s) ColourNote("orange", "", "[map] " .. s) end
+
+local function moved(p, dir)
+  local d = DELTA[dir]
+  if not d then return nil end
+  return { x = p.x + d[1], y = p.y + d[2], z = p.z + d[3] }
+end
+
+local function curmap()
+  maps[mapname] = maps[mapname] or {}
+  return maps[mapname]
+end
+
+local function get_room(p)
+  local m = curmap()
+  local zt = m[p.z]; if not zt then return nil end
+  local xt = zt[p.x]; if not xt then return nil end
+  return xt[p.y]
+end
+
+local function add_room(p, short)
+  local m = curmap()
+  m[p.z] = m[p.z] or {}
+  m[p.z][p.x] = m[p.z][p.x] or {}
+  local r = m[p.z][p.x][p.y]
+  if not r then
+    r = { exits = {} }
+    m[p.z][p.x][p.y] = r
+  end
+  if short and short ~= "" then
+    if r.short and r.short ~= short then r.exits = {} end  -- different room moved in here
+    r.short = short
+  end
+  return r
+end
+
+local function room_count()
+  local n = 0
+  for _, zt in pairs(curmap()) do
+    for _, xt in pairs(zt) do
+      for _ in pairs(xt) do n = n + 1 end
+    end
+  end
+  return n
+end
+
+local function in_combat()
+  local e = GetPluginVariable(MIP_ID, "enemy_name")
+  return e ~= nil and e ~= ""
+end
+
+local function bots_driving()
+  if GetPluginVariable(CHAOS_ID, "cs_enabled") == "1" then return true end
+  if GetPluginVariable(STEPPER_ID, "bot_active") == "1" then return true end
+  return false
+end
+
+-- ---------------- room line ----------------
+local function parse_short(roominfo)
+  local short = roominfo:match("^%s*(.-)%s*%(") or roominfo:gsub("^%s+", ""):gsub("%s+$", "")
+  local exits = {}
+  local elist = roominfo:match("%((.*)%)")
+  if elist then
+    for e in elist:gmatch("[^,%s]+") do
+      if DELTA[e] then exits[#exits + 1] = e end
+    end
+  end
+  return short, exits
+end
+
+function map_on_room(roominfo)
+  if not tracking or bots_driving() then return end
+  local short, exits = parse_short(roominfo)
+  if #pending > 0 then
+    local dir = table.remove(pending, 1)
+    local p2 = moved(pos, dir)
+    if p2 then pos = p2 end
+    lost = false
+  else
+    local cur = get_room(pos)
+    if cur and cur.short == short then
+      -- a look at the current room: fine
+    elseif not cur and room_count() == 0 then
+      -- first room of a fresh map
+    else
+      -- we moved without the mapper seeing it (teleport, follow...)
+      if not lost then
+        lost = true
+        note("lost track of position - right-click your room on the map (or walk on)")
+      end
+      map_draw()
+      return
+    end
+  end
+  local r = add_room(pos, short)
+  for _, e in ipairs(exits) do r.exits[e] = true end
+  -- click-walk: next step after each confirm
+  if plan then
+    if plan.idx > #plan.dirs then
+      plan = nil
+      note("arrived")
+    else
+      local dir = plan.dirs[plan.idx]
+      plan.idx = plan.idx + 1
+      pending[#pending + 1] = dir
+      pending_time = os.time()
+      Send(dir)
+    end
+  end
+  map_draw()
+end
+
+function map_blocked()
+  if #pending > 0 then
+    table.remove(pending, 1)
+    if plan then
+      plan = nil
+      note("blocked - walk aborted")
+    end
+  end
+end
+
+-- typed movement
+function OnPluginCommand(text)
+  if tracking and not bots_driving() and not lost then
+    for token in text:gmatch("[^;]+") do
+      local t = token:gsub("^%s+", ""):gsub("%s+$", ""):lower()
+      if DELTA[t] then
+        pending[#pending + 1] = t
+        pending_time = os.time()
+      end
+    end
+  end
+  return true
+end
+
+-- stale pending moves (commands that produced no room) get dropped
+function map_tick()
+  if #pending > 0 and os.time() - pending_time > 8 then
+    pending = {}
+    if plan then plan = nil note("walk timed out") end
+  end
+end
+
+-- ---------------- click-to-walk ----------------
+local function bfs(src, dst)
+  if src.x == dst.x and src.y == dst.y and src.z == dst.z then return {} end
+  local function key(p) return p.z .. "|" .. p.x .. "|" .. p.y end
+  local came = { [key(src)] = { dir = false } }
+  local queue, qi = { src }, 1
+  local found
+  while queue[qi] do
+    local cur = queue[qi]; qi = qi + 1
+    if cur.x == dst.x and cur.y == dst.y and cur.z == dst.z then found = cur break end
+    local room = get_room(cur)
+    if room then
+      for dir in pairs(room.exits) do
+        local nxt = moved(cur, dir)
+        if nxt and get_room(nxt) and not came[key(nxt)] then
+          came[key(nxt)] = { dir = dir, prev = cur }
+          queue[#queue + 1] = nxt
+        end
+      end
+    end
+    if qi > 20000 then break end
+  end
+  if not found then return nil end
+  local path = {}
+  local node = came[key(found)]
+  while node and node.dir do
+    table.insert(path, 1, node.dir)
+    node = came[key(node.prev)]
+  end
+  return path
+end
+
+function map_click(flags, id)
+  local z, x, y = id:match("^room_(%-?%d+)|(%-?%d+)|(%-?%d+)$")
+  if not z then return end
+  local target = { x = tonumber(x), y = tonumber(y), z = tonumber(z) }
+  local rh = false
+  if bit and bit.band then rh = bit.band(flags, 0x20) ~= 0 end
+  if rh then
+    pos = target
+    lost = false
+    pending = {}
+    plan = nil
+    note("position set")
+    map_draw()
+    return
+  end
+  if lost then note("position unknown - right-click your room first") return end
+  if bots_driving() then note("a bot is driving - not walking") return end
+  if in_combat() then note("in combat - not walking") return end
+  local path = bfs(pos, target)
+  if not path then note("no mapped path there") return end
+  if #path == 0 then note("you are here") return end
+  plan = { dirs = path, idx = 2 }
+  pending[#pending + 1] = path[1]
+  pending_time = os.time()
+  note("walking " .. #path .. " rooms")
+  Send(path[1])
+end
+
+-- ---------------- window ----------------
+local function btn(id, x1, y1, x2, y2, label, active, tooltip)
+  WindowRectOp(WIN, 2, x1, y1, x2, y2, active and 0x707030 or 0x402818)
+  WindowRectOp(WIN, 1, x1, y1, x2, y2, active and 0x90C040 or 0x604020)
+  WindowText(WIN, "fb", label, x1 + math.floor((x2 - x1) / 2) - #label * 4, y1 + 3, 0, 0,
+             active and 0x80FFFF or 0xE0C8A0)
+  WindowAddHotspot(WIN, id, x1, y1, x2, y2, "", "", "map_button", "", "", tooltip or label, 1, 0)
+end
+
+function map_button(flags, id)
+  if     id == "mp_power" then map_cmd(tracking and "off" or "on") return
+  elseif id == "mp_clear" then map_cmd("clear") return
+  elseif id == "mp_stop"  then map_cmd("stop") return
+  elseif id == "mp_hide"  then visible = false SetVariable("visible", "0") WindowShow(WIN, false) return
+  end
+end
+
+function map_draw()
+  if not visible then return end
+  if not windowinfo then windowinfo = movewindow.install(WIN, 9, 0) end
+  WindowCreate(WIN, windowinfo.window_left, windowinfo.window_top, W, H,
+               windowinfo.window_mode, windowinfo.window_flags, 0x101418)
+  WindowFont(WIN, "f",  "Lucida Console", 9, false, false, false, false)
+  WindowFont(WIN, "fb", "Lucida Console", 9, true,  false, false, false)
+  WindowRectOp(WIN, 1, 0, 0, W, H, 0x604020)
+  WindowRectOp(WIN, 2, 1, 1, W - 1, 17, 0x402818)
+  WindowText(WIN, "fb", "Mapper", 8, 3, 0, 0, 0x40C0FF)
+  movewindow.add_drag_handler(WIN, 0, 0, W, 17, miniwin.cursor_hand)
+  -- status
+  local st, sc
+  if not tracking then st, sc = "OFF", 0x808080
+  elseif bots_driving() then st, sc = "suspended (bot driving)", 0x808080
+  elseif lost then st, sc = "LOST - right-click your room", 0x5050F0
+  elseif plan then st, sc = "WALKING...", 0x40C0FF
+  else st, sc = "tracking", 0x60E060 end
+  WindowText(WIN, "fb", st, 8, 21, 0, 0, sc)
+  WindowText(WIN, "f", string.format("%s   lvl %d   %d rooms", mapname:sub(1, 18), pos.z, room_count()),
+             8, 35, 0, 0, 0x909090)
+  btn("mp_power", 192, 21, 232, 39, tracking and "ON" or "OFF", tracking, "Mapping on/off")
+  btn("mp_stop", 236, 21, 280, 39, "Stop", false, "Abort click-walking")
+  btn("mp_clear", 192, 43, 246, 61, "Clear", false, "Wipe this map ('mm clear')")
+  btn("mp_hide", 284, 21, 332, 39, "X", false, "Hide ('mm win' brings it back)")
+  -- grid, centered on player
+  local gx, gy, gw, gh = 10, 68, 320, 300
+  WindowRectOp(WIN, 2, gx, gy, gx + gw, gy + gh, 0x080A0C)
+  WindowRectOp(WIN, 1, gx, gy, gx + gw, gy + gh, 0x604020)
+  local cols, rows = math.floor(gw / CELL), math.floor(gh / CELL)
+  local x0 = pos.x - math.floor(cols / 2)
+  local y0 = pos.y + math.floor(rows / 2)
+  local m = curmap()
+  local zt = m[pos.z] or {}
+  for cx = 0, cols - 1 do
+    for cy = 0, rows - 1 do
+      local wx, wy = x0 + cx, y0 - cy
+      local px, py = gx + cx * CELL, gy + cy * CELL
+      local xt = zt[wx]
+      local room = xt and xt[wy]
+      if room then
+        -- exit connectors first
+        for dir in pairs(room.exits) do
+          local d = DELTA[dir]
+          if d and d[3] == 0 then
+            local mx, my = px + CELL / 2, py + CELL / 2
+            WindowLine(WIN, mx, my, mx + d[1] * (CELL / 2), my - d[2] * (CELL / 2), 0x806040, 0, 1)
+          end
+        end
+        WindowRectOp(WIN, 2, px + 3, py + 3, px + CELL - 3, py + CELL - 3, 0x806040)
+        if room.exits.u or room.exits.up then
+          WindowRectOp(WIN, 2, px + CELL - 6, py + 3, px + CELL - 4, py + 5, 0xD0A000)
+        end
+        if room.exits.d or room.exits.down then
+          WindowRectOp(WIN, 2, px + CELL - 6, py + CELL - 5, px + CELL - 4, py + CELL - 3, 0x30C0F0)
+        end
+        local tip = (room.short or "?") .. "  (" .. wx .. "," .. wy .. ")"
+        WindowAddHotspot(WIN, "room_" .. pos.z .. "|" .. wx .. "|" .. wy,
+          px + 1, py + 1, px + CELL - 1, py + CELL - 1, "", "", "map_click", "", "",
+          tip .. "   click: walk here   right-click: I am here", 1, 0)
+      end
+      if wx == pos.x and wy == pos.y then
+        WindowRectOp(WIN, 2, px + 4, py + 4, px + CELL - 4, py + CELL - 4, lost and 0x5050F0 or 0x60FF60)
+      end
+    end
+  end
+  WindowText(WIN, "f", "click room = walk   right-click = I am here", gx, gy + gh + 4, 0, 0, 0x504540)
+  WindowShow(WIN, true)
+end
+
+-- ---------------- persistence ----------------
+local function save_maps()
+  local out = {}
+  for mn, m in pairs(maps) do
+    for z, zt in pairs(m) do
+      for x, xt in pairs(zt) do
+        for y, r in pairs(xt) do
+          local ex = {}
+          for d in pairs(r.exits) do ex[#ex + 1] = d end
+          local short = (r.short or ""):gsub("[\t\n%z\1-\31]", " ")
+          out[#out + 1] = mn .. "\t" .. z .. "\t" .. x .. "\t" .. y .. "\t" ..
+                          table.concat(ex, ",") .. "\t" .. short
+        end
+      end
+    end
+  end
+  SetVariable("rooms", table.concat(out, "\n"))
+  SetVariable("mapname", mapname)
+  SetVariable("pos", pos.x .. "|" .. pos.y .. "|" .. pos.z)
+  SetVariable("tracking", tracking and "1" or "0")
+  SetVariable("visible", visible and "1" or "0")
+end
+
+local function load_maps()
+  local s = GetVariable("rooms")
+  if s then
+    for line in s:gmatch("[^\n]+") do
+      local mn, z, x, y, ex, short = line:match("^(.-)\t(%-?%d+)\t(%-?%d+)\t(%-?%d+)\t(.-)\t(.*)$")
+      if mn then
+        local keep = mapname
+        mapname = mn
+        local r = add_room({ x = tonumber(x), y = tonumber(y), z = tonumber(z) }, short)
+        for d in ex:gmatch("[^,]+") do r.exits[d] = true end
+        mapname = keep
+      end
+    end
+  end
+  local p = GetVariable("pos")
+  if p then
+    local x, y, z = p:match("^(%-?%d+)|(%-?%d+)|(%-?%d+)$")
+    if x then pos = { x = tonumber(x), y = tonumber(y), z = tonumber(z) } end
+  end
+end
+
+function OnPluginSaveState()
+  save_maps()
+  if windowinfo then movewindow.save_state(WIN) end
+end
+
+-- ---------------- commands ----------------
+function map_cmd(args)
+  args = (args or ""):gsub("^%s+", ""):gsub("%s+$", "")
+  if args == "" then
+    note(string.format("map '%s': %d rooms, %s%s", mapname, room_count(),
+      tracking and "tracking" or "off", lost and ", LOST" or ""))
+    Note("  mm on|off . mm area <name> . mm list . mm clear . mm stop . mm win")
+  elseif args == "on" then
+    tracking = true
+    SetVariable("tracking", "1")
+    pending = {}
+    lost = (room_count() > 0)   -- has a map: must resync; fresh map: starts at 0,0
+    if room_count() == 0 then lost = false end
+    note("mapping ON" .. (lost and " - right-click your room to sync" or ""))
+  elseif args == "off" then
+    tracking = false
+    SetVariable("tracking", "0")
+    plan = nil
+    pending = {}
+    note("mapping OFF")
+  elseif args == "list" then
+    local t = {}
+    for mn in pairs(maps) do t[#t + 1] = mn end
+    table.sort(t)
+    note("maps: " .. (#t > 0 and table.concat(t, ", ") or "(none)"))
+  elseif args == "clear" then
+    maps[mapname] = {}
+    pos = { x = 0, y = 0, z = 0 }
+    lost = false
+    pending = {}
+    plan = nil
+    note("map '" .. mapname .. "' wiped - current room is now 0,0")
+  elseif args == "stop" then
+    plan = nil
+    pending = {}
+    note("walk aborted")
+  elseif args == "win" then
+    visible = not visible
+    SetVariable("visible", visible and "1" or "0")
+    if visible then map_draw() else WindowShow(WIN, false) end
+  else
+    local area = args:match("^area%s+(.+)$")
+    if area then
+      mapname = area:lower()
+      SetVariable("mapname", mapname)
+      pos = { x = 0, y = 0, z = 0 }
+      pending = {}
+      plan = nil
+      lost = (room_count() > 0)
+      note("map '" .. mapname .. "' (" .. room_count() .. " rooms)" ..
+           (lost and " - right-click your room to sync" or " - current room is 0,0"))
+    else
+      note("unknown command - 'mm' for help")
+    end
+  end
+  map_draw()
+end
+
+function OnPluginInstall()
+  load_maps()
+  AddTimer("map_tick", 0, 0, 5, "", timer_flag.Enabled + timer_flag.Replace, "map_tick")
+  map_draw()
+end
+
+function OnPluginEnable()  map_draw() end
+function OnPluginDisable() WindowShow(WIN, false) end
+]]>
+</script>
+</muclient>

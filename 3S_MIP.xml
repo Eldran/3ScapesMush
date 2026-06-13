@@ -1,0 +1,305 @@
+<?xml version="1.0" encoding="iso-8859-1"?>
+<!DOCTYPE muclient>
+<muclient>
+<plugin
+   name="ThreeS_MIP"
+   author="Joakim"
+   id="9a8b3c5d1e2f4a6b8c0d2e4f"
+   language="Lua"
+   purpose="3Scapes MIP protocol: handshake, stats (FFF), glines, Viking BBE feed"
+   date_written="2026-06-09"
+   requires="4.73"
+   version="1.0"
+   save_state="y"
+>
+<description><![CDATA[
+Port of mip.tin + the vmip part of vmap.tin.
+
+Does the 3klient handshake on connect, parses #K%id MIP lines (gagged),
+and publishes the data for the other 3S plugins:
+  hp, hpmax, sp, spmax, gp1, gp1max, gp2, gp2max,
+  enemy_name, enemy_hp, gline1, gline2, uptime, reboot, lag,
+  vmip_ser (KEY=VALUE lines of the whole Viking BBE feed)
+
+Commands:
+  mipecho on|off   - show/hide raw MIP lines
+  mipdebug on|off  - debug prints
+]]>
+</description>
+</plugin>
+
+<triggers>
+  <trigger enabled="y" name="mip_line" regexp="y" omit_from_output="y"
+   match="^(.*?)#K\%(\d{5})(.{3})(.{3})(.*)$"
+   send_to="12" sequence="10" keep_evaluating="n">
+  <send>mip_line("%2", "%3", "%4", "%5")</send>
+  </trigger>
+  <trigger enabled="y" name="mip_prompt" regexp="y" match="^&gt;\s*$" send_to="12" sequence="60" keep_evaluating="y">
+  <send>mip_prompt_seen()</send>
+  </trigger>
+</triggers>
+
+<aliases>
+  <alias match="^mipstart$" enabled="y" regexp="y" send_to="12" sequence="100"><send>mip_manual_start()</send></alias>
+  <alias match="^mipecho (on|off)$" enabled="y" regexp="y" send_to="12" sequence="100">
+  <send>
+    SetTriggerOption("mip_line", "omit_from_output", "%1" == "on" and "n" or "y")
+    mip_set_echo("%1" == "on")
+    Note("MIP echo: %1")
+  </send>
+  </alias>
+  <alias match="^mipdebug (on|off)$" enabled="y" regexp="y" send_to="12" sequence="100">
+  <send>mip_debug = ("%1" == "on"); Note("MIP debug: %1")</send>
+  </alias>
+</aliases>
+
+<script>
+<![CDATA[
+math.randomseed(os.time())
+
+mip_debug = false
+local mipid = GetVariable("mipid")
+local needs_handshake = false
+local got_packet = false
+local hs_tries = 0
+local my   = {}   -- stats
+local vmip = {}   -- viking BBE feed
+local sess = {}
+
+local VMIP_SUBCODE = "BBE"
+
+local function dbg(s) if mip_debug then ColourNote("silver","", "[mip] "..s) end end
+
+-- strip 3k gline colour tags like <r <g <y > and colour-words
+local function colorconv(s)
+  s = s:gsub("[<]([bcgrsvwy])", "")
+  s = s:gsub(">", "")
+  s = s:gsub("gre[ya]y?:", ""):gsub("red:", ""):gsub("green:", ""):gsub("blue:", ""):gsub("yellow:", "")
+  return s
+end
+
+local function split2(s, sep)
+  local t = {}
+  local pat = "(.-)" .. sep
+  local last, n = 1, 0
+  for part, pos in s:gmatch(pat .. "()") do
+    n = n + 1; t[n] = part; last = pos
+  end
+  n = n + 1; t[n] = s:sub(last)
+  return t
+end
+
+local function push_vars()
+  local function sv(k, v) SetVariable(k, tostring(v or "")) end
+  sv("hp", my.hp);   sv("hpmax", my.hpmax)
+  sv("sp", my.sp);   sv("spmax", my.spmax)
+  sv("gp1", my.gp1); sv("gp1max", my.gp1max)
+  sv("gp2", my.gp2); sv("gp2max", my.gp2max)
+  sv("enemy_name", my.enemy_name); sv("enemy_hp", my.enemy_hp)
+  sv("gline1", my.gline1); sv("gline2", my.gline2)
+  sv("uptime", sess.uptime); sv("reboot", sess.reboot); sv("lag", sess.lag)
+  sv("seid", vmip.SEID)
+  local out = {}
+  for k, v in pairs(vmip) do out[#out+1] = k .. "=" .. v end
+  sv("vmip_ser", table.concat(out, "\n"))
+end
+
+local function process_FFF(data)
+  -- wire format: FLAG~VALUE~FLAG~VALUE~...  (single-tilde delimited)
+  local toks = split2(data, "~")
+  for i = 1, #toks - 1, 2 do
+    local flag, val = toks[i], toks[i + 1]
+    if #flag == 1 then
+      if     flag == "A" then my.hp = val
+      elseif flag == "B" then my.hpmax = val
+      elseif flag == "C" then my.sp = val
+      elseif flag == "D" then my.spmax = val
+      elseif flag == "E" then my.gp1 = val
+      elseif flag == "F" then my.gp1max = val
+      elseif flag == "G" then my.gp2 = val
+      elseif flag == "H" then my.gp2max = val
+      elseif flag == "I" then my.gline1 = colorconv(val)
+      elseif flag == "J" then my.gline2 = colorconv(val)
+      elseif flag == "K" then
+        if val ~= "" then my.enemy_name = val else my.enemy_name = ""; my.enemy_hp = "" end
+      elseif flag == "L" then my.enemy_hp = val
+      elseif flag == "N" then my.round = val
+      end
+    end
+  end
+  push_vars()
+  BroadcastPlugin(1, "stats")
+end
+
+local function process_BBE(data)
+  local t = split2(data, "%^%^")
+  for i = 1, #t - 1, 2 do
+    if t[i] ~= "" then
+      if t[i] == "VMAPH" and vmip.VMAPH ~= t[i + 1] then
+        SetVariable("vmaph_time", tostring(os.time()))
+      end
+      vmip[t[i]] = t[i + 1] or ""
+    end
+  end
+  push_vars()
+  BroadcastPlugin(2, "vmip")
+end
+
+-- tells / two-way comms (BAB):  marker~source~message
+local function process_BAB(data)
+  local marker, source, msg = data:match("^(.-)~(.-)~(.*)$")
+  if not source or source == "0" or source == "" then return end
+  local text
+  if marker == "x" then text = "To " .. source .. ": " .. msg
+  else text = source .. ": " .. msg end
+  BroadcastPlugin(3, "Tell\1" .. text)
+end
+
+-- broadcast channels (CAA):  command~channel~source~message
+local function process_CAA(data)
+  if data:find("[PARTY] GOLD divvy called by", 1, true)
+     or data:find("[PARTY] All gold divvied", 1, true)
+     or data:find("[PARTY] coins called by", 1, true)
+     or data:find("[PARTY] Divvy of", 1, true) then return end
+  local command, channel, source, msg = data:match("^(.-)~(.-)~(.-)~(.*)$")
+  if not channel or msg == nil or msg == "" then return end
+  BroadcastPlugin(3, channel .. "\1" .. msg)
+end
+
+function mip_line(id, _skip, flag, data)
+  if id ~= mipid then return end
+  got_packet = true
+  dbg(flag .. " " .. data)
+  if     flag == "FFF" then process_FFF(data)
+  elseif flag == VMIP_SUBCODE then process_BBE(data)
+  elseif flag == "AAC" then sess.reboot = data; push_vars()
+  elseif flag == "AAF" then sess.uptime = data; push_vars()
+  elseif flag == "BAE" then sess.lag = data; push_vars()
+  elseif flag == "BAA" then Note(data)
+  elseif flag == "BAB" then process_BAB(data)
+  elseif flag == "CAA" then process_CAA(data)
+  end
+end
+
+-- ===== packet-level gagging =====
+-- The display trigger only fires on COMPLETE lines, so MIP lines that
+-- arrive split across packets flash on screen before being omitted.
+-- Strip them from the raw stream instead; the trigger stays as fallback.
+local pkt_tail = ""
+local echo_raw = false
+
+function mip_set_echo(on) echo_raw = on end
+
+local function consume_mip_line(line)
+  local pre, id, skip, flag, data = line:match("^(.-)#K%%(%d%d%d%d%d)(...)(...)(.*)$")
+  if id then
+    mip_line(id, skip, flag, data)
+    return pre or ""
+  end
+  return nil
+end
+
+function OnPluginPacketReceived(s)
+  if echo_raw or not mipid then return s end
+  s = pkt_tail .. s
+  pkt_tail = ""
+  local out, pos, len = {}, 1, #s
+  while pos <= len do
+    local nl = s:find("\n", pos, true)
+    if nl then
+      local line = s:sub(pos, nl)
+      if line:find("#K%", 1, true) then
+        local pre = consume_mip_line((line:gsub("\r?\n$", "")))
+        if pre == nil then
+          out[#out + 1] = line          -- contained '#K%' but wasn't MIP
+        elseif #pre > 0 then
+          out[#out + 1] = pre .. "\r\n" -- keep text that preceded the marker
+        end
+      else
+        out[#out + 1] = line
+      end
+      pos = nl + 1
+    else
+      local tail = s:sub(pos)
+      if tail:find("#K", 1, true) and #tail < 4096 then
+        pkt_tail = tail                  -- might be a split MIP line: hold it
+      else
+        out[#out + 1] = tail
+      end
+      break
+    end
+  end
+  return table.concat(out)
+end
+
+function mip_start()
+  SendNoEcho("3klient " .. mipid .. "~~MUSHclient" .. Version())
+  SendNoEcho("3klient LINEFEED on")
+  SendNoEcho("3klient HAA off")
+  SendNoEcho("forcehp")
+  Note("[MIP] handshake sent (id " .. mipid .. ")")
+  hs_tries = hs_tries + 1
+  if hs_tries <= 3 then
+    DoAfterSpecial(10, "mip_retry_check()", sendto.script)
+  end
+end
+
+function mip_retry_check()
+  if got_packet then return end
+  Note("[MIP] no data yet - retrying handshake")
+  mip_start()
+end
+
+-- the in-game prompt never appears during login, so this is the safe
+-- moment to handshake after a fresh connect
+function mip_prompt_seen()
+  if needs_handshake then
+    needs_handshake = false
+    mip_start()
+  end
+end
+
+function mip_manual_start()
+  hs_tries = 0
+  got_packet = false
+  mip_start()
+end
+
+-- restore the last known viking feed (map rows etc.) after a plugin
+-- reload - the mud only re-sends most of it when something changes
+local function restore_vmip()
+  local s = GetVariable("vmip_ser")
+  if not s then return end
+  for line in s:gmatch("[^\n]+") do
+    local k, v = line:match("^([^=]+)=(.*)$")
+    if k and vmip[k] == nil then vmip[k] = v end
+  end
+end
+
+local function ensure_id()
+  if not mipid or mipid == "" then
+    mipid = string.format("%05d", math.random(0, 99999))
+    SetVariable("mipid", mipid)
+  end
+end
+
+function OnPluginConnect()
+  ensure_id()
+  needs_handshake = true
+  got_packet = false
+  hs_tries = 0
+end
+
+function OnPluginInstall()
+  ensure_id()
+  restore_vmip()
+  if IsConnected() then
+    -- mid-session install: we're already logged in
+    got_packet = false
+    hs_tries = 0
+    DoAfterSpecial(2, "mip_start()", sendto.script)
+  end
+end
+]]>
+</script>
+</muclient>
