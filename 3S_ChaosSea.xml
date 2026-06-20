@@ -6,7 +6,6 @@
    author="Joakim"
    id="5e6f7a8b9c0d1e2f3a4b5c6d"
    language="Lua"
-   purpose="Chaos sea explorer with live map window (port of chaossea_stepper.lua + random.tin)"
    date_written="2026-06-10"
    requires="4.73"
    version="1.0"
@@ -17,9 +16,6 @@ Chaos sea stepper: maps rooms on a 3D grid as you move, queues unexplored
 exits and walks to the nearest frontier room (BFS through known rooms).
 Shows a live map miniwindow with clickable buttons.
 
-Fixes vs the old chaossea_stepper.lua: diagonal moves no longer corrupt
-the level (z) axis, rooms passed through during a walk no longer pollute
-the map, and already-explored frontier entries are skipped.
 
 Commands:
   cs              help
@@ -82,7 +78,7 @@ Commands:
 <script>
 <![CDATA[
 -- ============================================================
--- Chaos Sea explorer - port of chaossea_stepper.lua
+-- Chaos Sea explorer - 
 -- ============================================================
 local STEPPER_ID = "1f2e3d4c5b6a798887766554"
 local MIP_ID = "9a8b3c5d1e2f4a6b8c0d2e4f"
@@ -108,6 +104,8 @@ local rest_secs = tonumber(GetVariable("rest_secs")) or 60
 local resting = false
 local rest_until = 0
 local goal_found = false
+local room_goal_idx = nil   -- index in `goals` of the best match seen this room
+local room_goal_word = nil  -- the matched word, acted on at the prompt
 local function parse_goals()
   goals = {}
   for w in goal:lower():gmatch("[%w_]+") do goals[#goals + 1] = w end
@@ -315,6 +313,7 @@ function cs_on_room(short)
     return
   end
   cs_flags.item = false; cs_flags.gold = false; cs_flags.player = false
+  room_goal_idx = nil; room_goal_word = nil
   pending_mob = nil
   parse_exits(short)
   armed = true
@@ -322,21 +321,36 @@ function cs_on_room(short)
 end
 
 -- the GOAL: a room with a cask (or whatever 'cs goal' is set to)
+local function cs_reach_goal(gw)
+  -- target item (cask/portal) is in the room: just PAUSE the bot. paused is the
+  -- robust stop - cs_step/cs_advance/cs_on_prompt/watchdog all honour it (goal_found
+  -- did not, so scheduled steps walked out of the room).
+  paused = true
+  plan = nil
+  pending_mob = nil
+  room_goal_idx = nil; room_goal_word = nil   -- handled; don't re-pause on unpause
+  note(string.upper(gw) .. " found - bot PAUSED (click Pause / 'cs pause' to continue).")
+  Sound("SysExclamation")
+  cs_draw()
+end
+
 function cs_on_item(line)
   if not enabled or paused then return end
   cs_flags.item = true
   if not goal_found then
     local low = line:lower()
-    for _, gw in ipairs(goals) do
-      if low:find(gw, 1, true) then
-        goal_found = true
-        auto = false
-        plan = nil
-        pending_mob = nil          -- don't pick a fight in the goal room
-        note(string.upper(gw) .. " HERE! Bot stopped.")
-        Sound("SysExclamation")
-        if gw == "cask" then Send("open cask") end
-        cs_draw()
+    for i, gw in ipairs(goals) do
+      -- whole-word match: gw must be bounded by non-word chars (or line ends),
+      -- so "cask" no longer fires on "casket"/"cascade". gw is alnum/underscore
+      -- only (see parse_goals), so it needs no pattern-escaping.
+      if low:find("%f[%w]" .. gw .. "%f[%W]") then
+        -- record only the highest-priority goal in the room (lower index in
+        -- `goals` = higher priority). The action runs at the prompt, so cask
+        -- beats portal no matter which item line printed first.
+        if not room_goal_idx or i < room_goal_idx then
+          room_goal_idx = i
+          room_goal_word = gw
+        end
         break
       end
     end
@@ -407,6 +421,12 @@ end
 -- ---------- prompt: loot + keep the plan moving ----------
 function cs_on_prompt()
   if not enabled or paused or resting then return end
+  -- whole room is printed now: if a goal item was here, act on the
+  -- highest-priority one (cask before portal), ignoring print order.
+  if not goal_found and room_goal_idx then
+    cs_reach_goal(room_goal_word)
+    return
+  end
   if pending_mob and not fighting and not in_combat() then
     local mob = pending_mob
     pending_mob = nil
@@ -502,8 +522,17 @@ end
 local stuck_since = nil
 local idle_ticks = 0
 local awaiting_ticks = 0
+local cs_last_sea_min = nil
 
 function cs_watchdog()
+  -- tick the sea-age timer even while idle/paused: redraw once per minute change
+  if visible then
+    local st = tonumber(GetVariable("cs_sea_time"))
+    if st then
+      local m = math.floor((os.time() - st) / 60)
+      if m ~= cs_last_sea_min then cs_last_sea_min = m; cs_draw() end
+    end
+  end
   if not enabled or paused or resting or goal_found then
     stuck_since = nil
     idle_ticks = 0
@@ -694,7 +723,7 @@ end
 require "movewindow"
 
 local WIN = "chaossea_" .. GetPluginID()
-local W, H = 300, 411
+local W, H = 300, 439
 local windowinfo
 local CELL = 14
 local MAPX, MAPY, MAPW, MAPH = 10, 151, 280, 224
@@ -705,6 +734,33 @@ local C = {
   front = 0x3070FF, text = 0xF0F0F0, dim = 0x909090,
   btn = 0x402818, btntext = 0xE0C8A0, down = 0x30C0F0,
 }
+
+-- start a fresh sea (only while paused at the cask). number defaults to the
+-- last one used; change it with the "Set #" button (1-120).
+function cs_new_sea()
+  if not paused then note("New Sea only works while paused (at the cask)") return end
+  local n = tonumber(GetVariable("cs_seanum")) or 1
+  note("starting new sea #" .. n)
+  Send("retreat from the sea")
+  DoAfter(1, "unsetsea")
+  DoAfter(2, "setsea " .. n)
+  DoAfter(3, "enter sea")
+  SetVariable("cs_sea_time", tostring(os.time()))   -- start the sea-age clock
+  cs_draw()
+end
+
+function cs_set_seanum()
+  local s = utils.inputbox("Sea number (1-120):", "New sea number", GetVariable("cs_seanum") or "")
+  if not s then return end
+  local n = tonumber(s)
+  if n and n >= 1 and n <= 120 then
+    SetVariable("cs_seanum", tostring(math.floor(n)))
+    note("sea number set to " .. math.floor(n))
+    cs_draw()
+  elseif s:gsub("%s", "") ~= "" then
+    note("sea number must be 1-120")
+  end
+end
 
 function cs_button(flags, id)
   if id == "tab_Area" or id == "tab_Deadman" then
@@ -733,6 +789,8 @@ function cs_button(flags, id)
   elseif id == "b_dminus" then cs_interface("delay " .. (kill_delay - 0.5))
   elseif id == "b_dplus"  then cs_interface("delay " .. (kill_delay + 0.5))
   elseif id == "b_hide"  then cs_interface("win")
+  elseif id == "b_newsea" then cs_new_sea()
+  elseif id == "b_seanum" then cs_set_seanum()
   end
 end
 
@@ -857,6 +915,24 @@ function cs_draw()
   WindowText(WIN, "f", "you", MAPX + 4, MAPY + MAPH + 4, 0, 0, C.cur)
   WindowText(WIN, "f", "frontier", MAPX + 40, MAPY + MAPH + 4, 0, 0, C.front)
   WindowText(WIN, "f", "blue dot = down exit", MAPX + 110, MAPY + MAPH + 4, 0, 0, C.dim)
+  -- sea timer: time since the last New Sea click (unsetsea only works after 60 min)
+  local st = tonumber(GetVariable("cs_sea_time"))
+  if st then
+    local elm = math.floor((os.time() - st) / 60)
+    local left = 60 - elm
+    if left > 0 then
+      WindowText(WIN, "f", string.format("Sea age %dm   new sea in %dm", elm, left), 10, 397, 0, 0, 0x40C0FF)
+    else
+      WindowText(WIN, "f", string.format("Sea age %dm   ready for a new sea", elm), 10, 397, 0, 0, 0x60E060)
+    end
+  else
+    WindowText(WIN, "f", "no active sea timer", 10, 397, 0, 0, C.dim)
+  end
+  -- new-sea controls (only act while paused; lit when usable)
+  local sn = tonumber(GetVariable("cs_seanum")) or 1
+  draw_btn("b_newsea", 10, 413, 168, 433, "New Sea #" .. sn, paused,
+    "Retreat, unset, set & enter a new sea (only while paused)")
+  draw_btn("b_seanum", 174, 413, 238, 433, "Set #", false, "Set the sea number (1-120)")
   WindowShow(WIN, true)
 end
 

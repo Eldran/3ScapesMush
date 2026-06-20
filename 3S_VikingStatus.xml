@@ -49,11 +49,13 @@ require "movewindow"
 
 local MIP_ID = "9a8b3c5d1e2f4a6b8c0d2e4f"
 local WIN = "vikingstatus_" .. GetPluginID()
-local W, H = 560, 540
+local W, H = 560, 560
 local windowinfo
 local visible = (GetVariable("visible") ~= "0")
 local tab = GetVariable("tab") or "Stats"
-local TABS = { "Stats", "City", "People", "Goods", "Holds", "Sea", "Map", "Feeds" }
+local prev_rndz = nil                                  -- last seen RNDZ (round counter)
+local last_fight = tonumber(GetVariable("last_fight")) or 0  -- rounds the previous combat lasted
+local TABS = { "Stats", "City", "People", "Settlers", "Goods", "Holds", "Sea", "Map", "Mission", "Feeds" }
 
 local C = {
   bg = 0x201510, panel = 0x2A1C14, border = 0x604020,
@@ -164,6 +166,13 @@ local function getvars()
   }, vmip
 end
 
+-- number to commit on patrol: a user override if set, else the last patrol's count
+local function patrol_number(vmip)
+  local override = tonumber(GetVariable("patrol_num"))
+  if override then return override end
+  return tonumber((split(vmip.PATROL or "", "|"))[1])
+end
+
 local GOODS_NAME = { t = "timber", i = "iron", g = "grain", f = "furs", h = "fish",
                      m = "mead", a = "amber", r = "runeston", s = "spoils" }
 
@@ -198,6 +207,15 @@ local DEFAULT_LOCNAMES = {
   ["19|25"] = "Seer",
   ["51|16"] = "Berserker",
   ["4|28"]  = "Blot",
+}
+
+-- trade-hold index -> city name (what you trade against in-game). VREP gives
+-- the lineage/clan name instead, which is confusing, so map it to the city.
+local HOLDCITY = {
+  [0]  = "Midgard",     [1]  = "Lodbrok's Hold", [2]  = "Eiriksby",  [3]  = "Imaird",
+  [4]  = "Holmgard",    [5]  = "Hafrfjord",      [6]  = "Uppsala",   [7]  = "Borgarfjord",
+  [8]  = "Vestergotland", [9] = "Sverkersby",    [10] = "Ericsgard", [11] = "Birka",
+  [12] = "Lejre",       [13] = "Nidaros",
 }
 
 -- type labels for special places that are not travel towns
@@ -235,7 +253,7 @@ local ROUTES = {
   MidVas = { "leave", "e", "e", "e", "e", "e", "e", "e", "e", "e", "e", "e", "e", "e", "e", "e", "e", "e", "e", "s", "s", "s", "s", "e", "e", "s", "s", "s", "s", "w", "w", "enter" },
   NidMid = { "leave", "e", "e", "e", "e", "e", "e", "e", "e", "e", "e", "s", "s", "s", "s", "s", "s", "s", "s", "enter" },
   SeerMid = { "leave", "n", "n", "n", "n", "e", "e", "e", "enter" },
-  SveMid = { "leave", "e", "e", "e", "e", "e", "e", "e", "e", "e", "e", "e", "e", "s", "s", "s", "s", "enter" },
+  SveMid = { "leave", "e", "e", "e", "e", "e", "e", "e", "e", "e", "e", "e", "e", "n", "n", "n", "n", "enter" },
   UppMid = { "leave", "e", "e", "n", "n", "n", "n", "n", "n", "n", "n", "n", "n", "enter" },
   VasMid = { "leave", "e", "e", "n", "n", "n", "n", "w", "w", "n", "n", "n", "n", "w", "w", "w", "w", "w", "w", "w", "w", "w", "w", "w", "w", "w", "w", "w", "w", "w", "w", "enter" },
 }
@@ -401,11 +419,13 @@ local function draw_stats(my, vmip)
   nl(6)
   header("-- War --")
   txt(10, string.format("God %s > %s   next %ss", vmip.GOD_POWER or "?", vmip.GOD_POWER_FOCUS or "?", vmip.GOD_POWER_NEXT or "?")); nl()
-  txt(10, string.format("Fury %s   Threk %s   Chain %s   Depth %s",
-    clean(vmip.FURY):sub(1, 12), vmip.MTHREK or "?", vmip.CHAIN or "?", vmip.BSDEPTH or "?")); nl()
   txt(10, string.format("Raid %s   Blot %s", vmip.RAID or "?", (vmip.BLOT or "?"):sub(1, 16))); nl()
   nl(6)
   header("-- " .. (vmip.LIN or "?") .. "  GLvl " .. (vmip.GLVL or "?") .. " --")
+  local sub_lbl = string.format("Sub %s   Daler ", vmip.SUB or "?")
+  txt(10, sub_lbl)
+  WindowText(WIN, "f", vmip.DALER or "?", 10 + WindowTextWidth(WIN, "f", sub_lbl), ly, 0, 0, C.good)
+  nl()
   txt(10, string.format("Kap %s   Aud %s   Vis %s   Soemd %s", vmip.KAP or "?", vmip.AUD or "?", vmip.VIS or "?", vmip.SOE or "?")); nl()
   txt(10, string.format("VKxp %s   New %s   Reg %s   Tick %ss", vmip.VKXP or "?", vmip.VMNEW or "?", vmip.VMREG or "?", vmip.NEXTTICK or "?")); nl()
   local wx = split(vmip.WEATHER or "", "|")
@@ -414,34 +434,106 @@ local function draw_stats(my, vmip)
   nl(6)
   local stfx = clean(vmip.STFX or ""):gsub("[%[%]]", "")
   if stfx ~= "" then
-    -- per-effect colours matching the mud's own HP-bar line
-    local FX = { aeg = 0x40C040, sev = 0xC0C000, gjal = 0x40C040, gald = 0xC000C0,
-                 bles = 0xD0D0D0, helg = 0x4040E0, rymr = 0xA000A0 }
+    -- TODO: per-spell colours once the full spell list is known. For now every
+    -- effect uses the "undecided" yellow (C.warn).
     local x = 10
     for tok in stfx:gmatch("%S+") do
-      local nm = tok:match("^(%a+):")
-      WindowText(WIN, "f", tok, x, ly, 0, 0, (nm and FX[nm]) or C.warn)
+      WindowText(WIN, "f", tok, x, ly, 0, 0, C.warn)
       x = x + (#tok + 1) * 7
       if x > W - 60 then break end
     end
     nl()
   end
+  nl(6)
+  header("-- Combat --")
+  txt(10, "Fury " .. clean(vmip.FURY or ""):sub(1, 12)); nl()
+  txt(10, string.format("Threk %s / %s   Chain %s   Depth %s",
+    vmip.THREK or "?", vmip.MTHREK or "?", vmip.CHAIN or "?", vmip.BSDEPTH or "?")); nl()
+  txt(10, "Rounds " .. (vmip.RNDZ or "?")); nl()
+  txt(10, "Last fight " .. (last_fight > 0 and tostring(last_fight) or "-")); nl()
+  nl(6)
+  header("-- Patrol --")
+  if (vmip.PATROL or "") == "" then
+    txt(10, "none on patrol", C.dim); nl()
+  else
+    local p = split(vmip.PATROL or "", "|")
+    local mins = tonumber(p[2]) and (math.floor(num(p[2]) / 60) .. "m left") or ""
+    txt(10, string.format("Hirdmadrs %s   %s", p[1] or "?", mins)); nl()
+  end
+  -- click to commit a new patrol; number defaults to the last patrol's count
+  local pn = patrol_number(vmip)
+  local clbl = "Commit patrol: " .. (pn or "?")
+  txt(10, clbl, C.good)
+  local cw = WindowTextWidth(WIN, "f", clbl)
+  WindowAddHotspot(WIN, "patrol_commit", 10, ly, 10 + cw, ly + 12, "", "",
+    "vik_patrol_commit", "", "", "Send: vpatrol commit " .. (pn or "?"), 1, 0)
+  local chx = 10 + cw + 14
+  txt(chx, "[change]", C.head)
+  WindowAddHotspot(WIN, "patrol_setnum", chx, ly, chx + WindowTextWidth(WIN, "f", "[change]"), ly + 12,
+    "", "", "vik_patrol_setnum", "", "", "Set a custom number to commit", 1, 0)
+  nl()
+end
+
+local function draw_settlers(my, vmip)
+  header("-- Settlement --")
+  txt(10, string.format("Blot %s   Sproj %s   Sact %s",
+    (vmip.BLOT or "?"):sub(1, 14), vmip.SPROJ or "?", vmip.SACTIONS or "?")); nl()
+  nl(4)
+  header("-- Settlers --")
+  local s = split(vmip.SETTLERS or "", "|")
+  txt(10, string.format("Population %s   Tax %s   Mood %s", s[1] or "?", s[2] or "?", s[4] or "?")); nl()
+  local mood = tonumber(s[4])
+  if mood then
+    WindowRectOp(WIN, 2, 150, ly + 1, 400, ly + 12, C.panel)
+    local fill = math.floor(248 * math.min(mood, 100) / 100)
+    if fill > 0 then WindowRectOp(WIN, 2, 151, ly + 2, 151 + fill, ly + 11, grad(mood)) end
+    WindowRectOp(WIN, 1, 150, ly + 1, 400, ly + 12, C.border)
+    nl(16)
+  end
+  nl(4)
+  header("-- Settler detail (raw) --")
+  local sx = split(vmip.SETTLERX or "", "|")
+  -- the feed has a leading empty field; real values follow it
+  local vals = {}
+  for i = 2, #sx do vals[#vals + 1] = sx[i] end
+  if #vals == 0 then
+    txt(10, "no data", C.dim); nl()
+  else
+    -- index:value (slots unlabelled until their meaning is known)
+    local per = 9
+    local i = 1
+    while i <= #vals do
+      local parts = {}
+      for j = i, math.min(i + per - 1, #vals) do
+        parts[#parts + 1] = string.format("%2d:%-4s", j, vals[j])
+      end
+      txt(10, table.concat(parts, " "), C.text); nl()
+      i = i + per
+    end
+  end
 end
 
 local function draw_city(my, vmip)
-  header("-- Settlement --")
-  txt(10, string.format("Daler %s   Blot %s   Sproj %s   Sact %s",
-    vmip.DALER or "?", (vmip.BLOT or "?"):sub(1, 14), vmip.SPROJ or "?", vmip.SACTIONS or "?")); nl()
-  nl(4)
   header("-- Ships --")
   local ships = split(vmip.SHIPS or "", ";")
   if #ships == 0 then txt(10, "none", C.dim); nl()
   else
-    for i = 1, math.min(#ships, 6) do
+    -- two columns so all 10 ships fit without clipping the panels below
+    local slist = {}
+    for i = 1, math.min(#ships, 10) do
       local f = split(ships[i], "|")
       local eta = tonumber(f[5]) and (math.floor(num(f[5]) / 60) .. "m") or ""
-      local line = string.format("%-13s %-9s %-13s %s", f[1] or "?", f[3] or "?", f[4] or "", eta)
-      txt(10, line, (f[3] == "raiding") and C.bad or C.text); nl()
+      slist[i] = {
+        text = string.format("%-12s %-10s %s", f[1] or "?", f[4] or "", eta),
+        col  = C.text,
+      }
+    end
+    local rows = math.ceil(#slist / 2)
+    for i = 1, rows do
+      local a, b = slist[i], slist[i + rows]
+      WindowText(WIN, "f", a and a.text or "", 10, ly, 0, 0, a and a.col or C.text)
+      if b then WindowText(WIN, "f", b.text, 286, ly, 0, 0, b.col) end
+      nl(13)
     end
   end
   nl(4)
@@ -500,23 +592,34 @@ local function draw_city(my, vmip)
     end
   end
   nl(4)
-  header("-- Buildings --")
+  local bh = "-- Buildings   Daler "
+  local dal = vmip.DALER or "?"
+  txt(10, bh, C.head, "fb")
+  local bx = 10 + WindowTextWidth(WIN, "fb", bh)
+  WindowText(WIN, "fb", dal, bx, ly, 0, 0, C.good)
+  txt(bx + WindowTextWidth(WIN, "fb", dal), " --", C.head, "fb")
+  nl(15)
+  -- tier -> colour (BGR): T1 white, T2 teal, T3 blue, T4 yellow, T5 red
+  local TIERCOL = { ["1"] = 0xF0F0F0, ["2"] = 0xC0C000, ["3"] = 0xFF8040,
+                    ["4"] = 0x20E0F0, ["5"] = 0x4040FF }
   local blist = {}
   for entry in (vmip.BUILDINGS or ""):gmatch("[^,]+") do
     local name, tier = entry:match("^(.-):(%d+)$")
     if name then
       name = name:gsub("_", " "):gsub("(%a)([%w]*)", function(a, b) return a:upper() .. b end)
-      blist[#blist + 1] = name .. " T" .. tier
+      blist[#blist + 1] = { text = name .. " T" .. tier, col = TIERCOL[tier] or C.text }
     end
   end
+  table.sort(blist, function(a, b) return a.text < b.text end)
   if #blist == 0 then
     txt(10, "none", C.dim); nl()
   else
     -- two columns, like the in-game display
     local rows = math.ceil(#blist / 2)
     for i = 1, rows do
-      WindowText(WIN, "f", blist[i] or "", 10, ly, 0, 0, C.text)
-      WindowText(WIN, "f", blist[i + rows] or "", 286, ly, 0, 0, C.text)
+      local a, b = blist[i], blist[i + rows]
+      WindowText(WIN, "f", a and a.text or "", 10, ly, 0, 0, a and a.col or C.text)
+      if b then WindowText(WIN, "f", b.text, 286, ly, 0, 0, b.col) end
       nl(13)
     end
   end
@@ -531,30 +634,18 @@ local function draw_city(my, vmip)
 end
 
 local function draw_people(my, vmip)
-  header("-- Settlers --")
-  local s = split(vmip.SETTLERS or "", "|")
-  txt(10, string.format("Population %s   Tax %s   Mood %s", s[1] or "?", s[2] or "?", s[4] or "?")); nl()
-  local mood = tonumber(s[4])
-  if mood then
-    WindowRectOp(WIN, 2, 150, ly + 1, 400, ly + 12, C.panel)
-    local fill = math.floor(248 * math.min(mood, 100) / 100)
-    if fill > 0 then WindowRectOp(WIN, 2, 151, ly + 2, 151 + fill, ly + 11, grad(mood)) end
-    WindowRectOp(WIN, 1, 150, ly + 1, 400, ly + 12, C.border)
-    nl(16)
-  end
-  nl(4)
   header("-- Forces --")
   txt(10, string.format("Thralls %s   Followers %s", vmip.THRALLS or "?", (vmip.THRALL_FOLLOWER or "?"):sub(1, 30))); nl()
   txt(10, string.format("Garrison %s   Threk %s", vmip.GARRISON or "?", vmip.MTHREK or "?")); nl()
   nl(4)
-  header("-- Hird --")
+  header("-- Hird Guard --")
   local hird = split(vmip.HIRD or "", ";")
   if #hird == 0 then txt(10, "no hird", C.dim); nl()
   else
-    for i = 1, math.min(#hird, 6) do
+    for i = 1, math.min(#hird, 10) do
       local f = split(hird[i], "|")
-      txt(10, string.format("%-16s %-14s %s/%s/%s/%s  %s  %s",
-        f[2] or "?", f[3] or "?", f[4] or "?", f[5] or "?", f[6] or "?", f[7] or "?", f[9] or "?", f[10] or "?")); nl()
+      txt(10, string.format("%-16s %s/%s/%s/%s  %s  %s",
+        f[2] or "?", f[4] or "?", f[5] or "?", f[6] or "?", f[7] or "?", f[9] or "?", f[10] or "?")); nl()
     end
   end
   nl(4)
@@ -562,18 +653,63 @@ local function draw_people(my, vmip)
   local staff = split(vmip.STAFF or "", ";")
   if #staff == 0 then txt(10, "no staff hired", C.dim); nl()
   else
-    for i = 1, math.min(#staff, 8) do
+    txt(10, string.format("%-16s %-13s %-4s%-4s%-4s%-4s%-4s%-4s%-4s",
+      "", "", "Cbt", "Trd", "Cft", "Sea", "Wld", "Lnd", "Chm"), C.dim); nl(13)
+    for i = 1, math.min(#staff, 10) do
       local f = split(staff[i], "|")
-      txt(10, string.format("%-16s %-13s %-6s %s", f[1] or "?", f[2] or "?", f[3] or "?", f[4] or "")); nl(13)
+      local s = split(f[4] or "", ",")
+      txt(10, string.format("%-16s %-13s %-4s%-4s%-4s%-4s%-4s%-4s%-4s",
+        f[1] or "?", f[2] or "?",
+        s[1] or "?", s[2] or "?", s[3] or "?", s[4] or "?", s[5] or "?", s[6] or "?", s[7] or "?")); nl(13)
+    end
+  end
+  nl(4)
+  header("-- Bonds --")
+  local bonds = split(vmip.BONDS or "", ";")
+  if #bonds == 0 then
+    txt(10, "no bonds", C.dim); nl()
+  else
+    -- member number -> short (first) name from HIRD; the truncated feed may not
+    -- name members 4+, which then show as #n
+    local name = {}
+    for _, h in ipairs(split(vmip.HIRD or "", ";")) do
+      local f = split(h, "|")
+      if f[1] and f[2] then name[f[1]] = (f[2]:match("^(%S+)") or f[2]) end
+    end
+    -- matrix[a][b] = 4th field of the bond; collect the member ids present
+    local m, ids, seen = {}, {}, {}
+    for _, b in ipairs(bonds) do
+      local f = split(b, "|")
+      local a, c, val = f[1], f[2], f[4] or "?"
+      if a and c then
+        m[a] = m[a] or {}; m[a][c] = val
+        m[c] = m[c] or {}; m[c][a] = val
+        if not seen[a] then seen[a] = true; ids[#ids + 1] = a end
+        if not seen[c] then seen[c] = true; ids[#ids + 1] = c end
+      end
+    end
+    table.sort(ids, function(x, y) return (tonumber(x) or 0) < (tonumber(y) or 0) end)
+    local hdr = string.rep(" ", 11)
+    for _, c in ipairs(ids) do hdr = hdr .. string.format("%-4s", c) end
+    txt(10, hdr, C.dim); nl()
+    for _, a in ipairs(ids) do
+      local row = string.format("%-2s%-9s", a, (name[a] or ("#" .. a)):sub(1, 8))
+      for _, c in ipairs(ids) do
+        if a == c then row = row .. string.format("%-4s", "-")
+        else row = row .. string.format("%-4s", (m[a] and m[a][c]) or ".") end
+      end
+      txt(10, row, C.text); nl()
     end
   end
 end
 
+local last_tgoods = nil   -- cache: a momentarily-empty feed update shouldn't blank/jump the tab
 local function draw_goods(my, vmip)
-  header("-- Goods: best places to buy & sell --")
   local vrep = parse_idx_table(vmip.VREP)
-  local entries = split(vmip.TGOODS or "", "|")
+  if (vmip.TGOODS or "") ~= "" then last_tgoods = vmip.TGOODS end
+  local entries = split(last_tgoods or "", "|")
   if #entries == 0 then
+    header("-- Goods --")
     txt(10, "(no trade feed - vtoggle mip_trade_goods)", C.dim); nl()
     return
   end
@@ -582,7 +718,7 @@ local function draw_goods(my, vmip)
   for _, e in ipairs(entries) do
     local idx, goods = e:match("^(%d+)=(.*)$")
     if idx then
-      local name = (vrep[tonumber(idx)] or {})[2] or ("Hold " .. idx)
+      local name = HOLDCITY[tonumber(idx)] or (vrep[tonumber(idx)] or {})[2] or ("Hold " .. idx)
       for _, gd in ipairs(split(goods, ";")) do
         local l, lvl, sup, dem = gd:match("^(%a):(%-?%d+):(%d+):(%d+)$")
         if l then
@@ -593,50 +729,42 @@ local function draw_goods(my, vmip)
       end
     end
   end
-  txt(10, "good", C.dim)
-  txt(86, "-- buy at (top supply) --", C.good)
-  txt(318, "-- sell at (top demand) --", C.warn)
-  nl(16)
   local order = { "t", "i", "g", "f", "h", "m", "a", "r", "s" }
-  local XS, XD = { 86, 202 }, { 318, 434 }
-  local function rank2(x, list, key, vcol)
-    for i = 1, 2 do
-      local r = list[i]
-      if r and r[key] > 0 then
-        txt(x[i], r.town:sub(1, 8), C.text)
-        -- demand-cycle trend between town and value
-        if r.lvl and r.lvl ~= 0 then
-          local marks = string.rep(r.lvl > 0 and "+" or "-", math.min(math.abs(r.lvl), 3))
-          txt(x[i] + 60, marks, r.lvl > 0 and C.good or C.bad)
+
+  -- one section: the 2 best cities per good, sorted by `key` (desc)
+  local function section(title, key, vcol)
+    header(title)
+    -- always render every good (fixed row count) so the section can't resize
+    -- when a good momentarily drops out of the feed
+    for _, l in ipairs(order) do
+      local list = per[l] or {}
+      local s = {}
+      for i, r in ipairs(list) do s[i] = r end
+      table.sort(s, function(a, b) return a[key] > b[key] end)
+      txt(10, (GOODS_NAME[l] or l):sub(1, 9), C.label)
+      local xs = { 86, 310 }
+      for i = 1, 2 do
+        local r = s[i]
+        if r and r[key] > 0 then
+          txt(xs[i], r.town:sub(1, 15), C.text)
+          txt(xs[i] + 132, string.format("%4d", r[key]), vcol)
+          if r.lvl and r.lvl ~= 0 then
+            txt(xs[i] + 170, string.rep(r.lvl > 0 and "+" or "-", math.min(math.abs(r.lvl), 3)),
+                r.lvl > 0 and C.good or C.bad)
+          end
+        else
+          txt(xs[i], "-", C.dim)
         end
-        txt(x[i] + 84, string.format("%4d", r[key]), vcol)
-      else
-        txt(x[i], "-", C.dim)
       end
+      nl(14)
     end
   end
-  for _, l in ipairs(order) do
-    local list = per[l]
-    if list and #list > 0 then
-      txt(10, (GOODS_NAME[l] or l):sub(1, 8), C.label)
-      local bysup, bydem = {}, {}
-      for i, r in ipairs(list) do bysup[i] = r; bydem[i] = r end
-      table.sort(bysup, function(a, b)
-        if a.sup ~= b.sup then return a.sup > b.sup end
-        return a.dem < b.dem
-      end)
-      table.sort(bydem, function(a, b)
-        if a.dem ~= b.dem then return a.dem > b.dem end
-        return a.sup < b.sup
-      end)
-      rank2(XS, bysup, "sup", C.good)
-      rank2(XD, bydem, "dem", C.warn)
-      nl(15)
-    end
-  end
+
+  section("-- Best place to BUY (top supply) --", "sup", C.good)
   nl(6)
-  txt(10, "supply = stock on hand (buy cheap)   demand = shortage (sell high)", C.dim); nl()
-  txt(10, "+/- = demand cycle trend for that good in that hold", C.dim); nl()
+  section("-- Best place to SELL (top demand) --", "dem", C.warn)
+  nl(6)
+  txt(10, "+/- = demand-cycle trend for that good in that city", C.dim); nl()
 end
 
 local function draw_holds(my, vmip)
@@ -647,9 +775,13 @@ local function draw_holds(my, vmip)
   for i = 0, 20 do
     local v, s = vrep[i], stand[i]
     if v or s then
-      local name = (v and v[2]) or (s and s[2]) or ("?" .. i)
+      local name = HOLDCITY[i] or (v and v[2]) or (s and s[2]) or ("?" .. i)
       local standing = (s and s[4]) or "-"
-      local scol = standing == "Friendly" and C.good or (standing == "Hostile" and C.bad or C.label)
+      -- standing -> colour (add tiers here as they're unlocked)
+      local scol = (standing == "Allied"   and 0x40FF40)   -- brighter green (above Friendly)
+                or (standing == "Friendly" and C.good)     -- green
+                or (standing == "Hostile"  and C.bad)      -- red
+                or C.label                                 -- default (Neutral, etc.)
       WindowText(WIN, "f", string.format("%-16s", name:sub(1, 16)), 10, ly, 0, 0, C.text)
       WindowText(WIN, "f", string.format("%-10s", standing), 129, ly, 0, 0, scol)
       WindowText(WIN, "f", string.format("%6s %6s", (s and s[3]) or "-", (v and v[3]) or "-"), 204, ly, 0, 0, C.label)
@@ -688,13 +820,14 @@ local function draw_sea(my, vmip)
   if #v < 10 then
     header("-- Sea --")
     txt(10, "No voyage under way.", C.dim); nl()
-    local ships = split(vmip.LONGSHIP or vmip.SHIPS or "", ";")
-    if #ships > 0 then
+    local ships = split(vmip.SHIPS or "", ";")
+    if #ships > 0 and ships[1] ~= "" then
       nl(4)
       header("-- Fleet --")
-      for i = 1, math.min(#ships, 6) do
+      -- SHIPS holds the whole fleet (name | ? | status | dest | ...)
+      for i = 1, math.min(#ships, 10) do
         local f = split(ships[i], "|")
-        txt(10, string.format("%-13s %-9s %s", f[2] or f[1] or "?", f[4] or f[3] or "?", f[5] or f[4] or "")); nl()
+        txt(10, string.format("%-13s %-9s %s", f[1] or "?", f[3] or "?", f[4] or "")); nl()
       end
     end
     return
@@ -940,10 +1073,131 @@ local function draw_feeds(my, vmip)
   end
 end
 
+-- wrapper so each mission/errand town gets a unique hotspot id while still
+-- delegating to the map's travel handler (id carries the x|y before the @uid).
+function vik_mtravel(flags, id)
+  local coords = id:match("^mtrav_([%-%d|]+)@")
+  if coords then vik_travel_click(flags, "trav_" .. coords) end
+end
+
+-- click a mission number to send "vmission fulfill <number>"
+function vik_fulfill(flags, id)
+  local num = id:match("^mfulfill_(%d+)$")
+  if num then Send("vmission fulfill " .. num) end
+end
+
+-- newbie errand buttons
+function vik_mnewbie(flags, id)
+  if id == "mfetch" then Send("vmission newbie fetch")
+  elseif id == "msubmit" then Send("vmission newbie submit") end
+end
+
+-- patrol: commit a new patrol (number defaults to the last patrol's count)
+function vik_patrol_commit(flags, id)
+  local _, vmip = getvars()
+  local n = patrol_number(vmip)
+  if n then Send("vpatrol commit " .. n)
+  else Note("[viking] no patrol number known - use [change] to set one") end
+end
+
+function vik_patrol_setnum(flags, id)
+  local s = utils.inputbox("Hirdmadrs to commit (blank = use last patrol's count):",
+    "Patrol commit number", GetVariable("patrol_num") or "")
+  if not s then return end
+  s = s:gsub("%D", "")
+  SetVariable("patrol_num", s)   -- "" clears the override -> back to default
+  Note("[viking] patrol commit number: " .. (s ~= "" and s or "default (last patrol count)"))
+  vik_draw()
+end
+
+-- map a settlement name to its travel key (x|y), if it is travel-reachable
+-- normalise a town name for matching: lowercase, drop apostrophes/spaces/punctuation
+local function normtown(s) return ((s or ""):lower():gsub("[^%w]", "")) end
+local function town_travel_key(name)
+  local target = normtown(name)
+  for k, n in pairs(locnames) do if TRAVEL_CODE[k] and normtown(n) == target then return k end end
+  for k, n in pairs(DEFAULT_LOCNAMES) do if TRAVEL_CODE[k] and normtown(n) == target then return k end end
+  return nil
+end
+
+-- draw a town name at (x, ly); if reachable, colour it cyan and overlay a
+-- click-to-travel hotspot (same routing as the Map tab)
+local function draw_town(x, name, uid)
+  local key = town_travel_key(name)
+  WindowText(WIN, "f", name, x, ly, 0, 0, key and C.head or C.text)
+  if key then
+    local w = WindowTextWidth(WIN, "f", name)
+    WindowAddHotspot(WIN, "mtrav_" .. key .. "@" .. uid, x, ly, x + w, ly + 12,
+      "", "", "vik_mtravel", "", "", "click to travel to " .. name, 1, 0)
+  end
+end
+
+local function draw_mission(my, vmip)
+  header("-- Missions --")
+  if (vmip.MISSIONS or "") == "" then
+    txt(10, "no missions", C.dim); nl()
+  else
+    txt(10, "no", C.dim); txt(56, "town", C.dim); txt(160, "needs", C.dim); txt(330, "rep", C.dim); nl()
+    for i, ms in ipairs(split(vmip.MISSIONS, ";")) do
+      local f = split(ms, "|")
+      -- id | desc | rep | ? | expiry | (empty) | town | goods(good:qty,...)
+      local goods = (f[8] or ""):gsub(":", ""):gsub(",", " "):sub(1, 22)
+      local mnum = f[1] or "?"
+      WindowText(WIN, "f", mnum, 10, ly, 0, 0, C.good)
+      WindowAddHotspot(WIN, "mfulfill_" .. mnum, 10, ly, 10 + WindowTextWidth(WIN, "f", mnum), ly + 12,
+        "", "", "vik_fulfill", "", "", "click to fulfill mission " .. mnum, 1, 0)
+      draw_town(56, f[7] or "?", "m" .. i)
+      txt(160, goods)
+      txt(330, f[3] or "?")
+      nl()
+    end
+  end
+  nl(6)
+  header("-- Errand --")
+  if (vmip.ERRAND or "") == "" then
+    txt(10, "no errand", C.dim); nl()
+  else
+    local e = split(vmip.ERRAND, "|")
+    -- id | desc | rep | timelimit(s) | from | to | good | qty
+    txt(10, (e[2] or "?"):sub(1, 58)); nl()
+    local fromn, ton = e[5] or "?", e[6] or "?"
+    draw_town(10, fromn, "ef")
+    local x2 = 10 + WindowTextWidth(WIN, "f", fromn)
+    txt(x2, " -> ")
+    local x3 = x2 + WindowTextWidth(WIN, "f", " -> ")
+    draw_town(x3, ton, "et")
+    local x4 = x3 + WindowTextWidth(WIN, "f", ton)
+    local mins = tonumber(e[4]) and (math.floor(num(e[4]) / 60) .. "m") or "?"
+    txt(x4, string.format("   %s x%s   %s rep   %s", e[7] or "?", e[8] or "?", e[3] or "?", mins))
+    nl()
+  end
+  -- newbie errand action buttons
+  nl(4)
+  local function mbtn(id, x1, label, tip)
+    WindowRectOp(WIN, 2, x1, ly, x1 + 70, ly + 15, C.panel)
+    WindowRectOp(WIN, 1, x1, ly, x1 + 70, ly + 15, C.border)
+    WindowText(WIN, "fb", label, x1 + 35 - #label * 4, ly + 2, 0, 0, C.head)
+    WindowAddHotspot(WIN, id, x1, ly, x1 + 70, ly + 15, "", "", "vik_mnewbie", "", "", tip, 1, 0)
+  end
+  mbtn("mfetch", 10, "Fetch", "Send: vmission newbie fetch")
+  mbtn("msubmit", 90, "Submit", "Send: vmission newbie submit")
+  nl(18)
+end
+
 -- ---------------- main draw ----------------
 function vik_draw()
-  if not visible then return end
   local my, vmip = getvars()
+  -- track combat rounds: when RNDZ drops (combat ended / new fight reset its
+  -- counter), the value just before the drop was the last fight's round count.
+  local cur = tonumber(vmip.RNDZ)
+  if cur then
+    if prev_rndz and cur < prev_rndz then
+      last_fight = prev_rndz
+      SetVariable("last_fight", tostring(last_fight))
+    end
+    prev_rndz = cur
+  end
+  if not visible then return end
   if not windowinfo then
     windowinfo = movewindow.install(WIN, 6, 0)
   end
@@ -957,23 +1211,30 @@ function vik_draw()
   WindowText(WIN, "fb", "Viking Status", math.floor(W / 2) - 45, 3, 0, 0, C.head)
   movewindow.add_drag_handler(WIN, 0, 0, W, 18, miniwin.cursor_hand)
   -- tabs
-  local tw = math.floor((W - 2) / #TABS)
+  local per = math.ceil(#TABS / 2)          -- tabs across; two rows
+  local tw = math.floor((W - 2) / per)
   for i, t in ipairs(TABS) do
-    local x1 = 1 + (i - 1) * tw
+    local r = math.floor((i - 1) / per)      -- row 0 (top) or 1 (bottom)
+    local c = (i - 1) % per
+    local x1 = 1 + c * tw
+    local y1 = 19 + r * 19
+    local y2 = y1 + 18
     local sel = (t == tab)
-    WindowRectOp(WIN, 2, x1, 19, x1 + tw - 1, 37, sel and C.tabsel or C.tabbg)
-    WindowRectOp(WIN, 1, x1, 19, x1 + tw - 1, 37, C.border)
-    WindowText(WIN, sel and "fb" or "f", t, x1 + math.floor(tw / 2) - #t * 4, 23, 0, 0, sel and C.head or C.label)
-    WindowAddHotspot(WIN, "tab_" .. t, x1, 19, x1 + tw - 1, 37, "", "", "vik_tabclick", "", "", t, 1, 0)
+    WindowRectOp(WIN, 2, x1, y1, x1 + tw - 1, y2, sel and C.tabsel or C.tabbg)
+    WindowRectOp(WIN, 1, x1, y1, x1 + tw - 1, y2, C.border)
+    WindowText(WIN, sel and "fb" or "f", t, x1 + math.floor(tw / 2) - #t * 4, y1 + 4, 0, 0, sel and C.head or C.label)
+    WindowAddHotspot(WIN, "tab_" .. t, x1, y1, x1 + tw - 1, y2, "", "", "vik_tabclick", "", "", t, 1, 0)
   end
-  ly = 44
+  ly = 63
   if     tab == "Stats"  then draw_stats(my, vmip)
   elseif tab == "City"   then draw_city(my, vmip)
   elseif tab == "People" then draw_people(my, vmip)
+  elseif tab == "Settlers" then draw_settlers(my, vmip)
   elseif tab == "Goods"  then draw_goods(my, vmip)
   elseif tab == "Holds"  then draw_holds(my, vmip)
   elseif tab == "Sea"    then draw_sea(my, vmip)
   elseif tab == "Map"    then draw_map(my, vmip)
+  elseif tab == "Mission" then draw_mission(my, vmip)
   elseif tab == "Feeds"  then draw_feeds(my, vmip)
   end
   WindowShow(WIN, true)
@@ -1018,7 +1279,10 @@ function vik_toggle()
 end
 
 function OnPluginBroadcast(msg, id, name, text)
-  if id == MIP_ID then vik_draw() end
+  -- Goods tab is frozen for now (it jumped/resized on feed updates - WIP).
+  -- Skip the feed-driven redraw while it's the active tab; it still refreshes
+  -- when you click onto it. TODO: fix the Goods redraw, then remove this guard.
+  if id == MIP_ID and tab ~= "Goods" then vik_draw() end
 end
 
 function vik_tick(state)

@@ -1,10 +1,10 @@
--- 3s_areas.lua - generated from TinTin++ 3Steps bot files
+-- 3s_areas.lua
 -- Edit freely: each area has path (dirs/commands), flags and mobs.
 -- mobs maps the long name on '=M= ' / '[MONSTAR!]' lines to the kill target.
 areas = {
   aegis = {
     path = { "e", "e", "s", "e", "s", "s", "s", "e", "e", "n", "e", "n", "n", "n", "e", "d", "s", "w", "s", "s", "s", "w", "w", "d", "w", "w", "n", "n", "w", "n", "e", "e", "e", "e", "e", "n", "e", "d", "d", "e", "e", "s", "s", "s", "s", "s", "s", "s", "s", "w", "w", "w", "w", "w", "w", "w", "w", "n", "e", "e", "e", "e", "e", "e", "e", "e", "n", "w", "w", "w", "w", "w", "w", "w", "w", "n", "e", "e", "e", "e", "e", "e", "e", "e", "n", "w", "w", "w", "w", "w", "w", "w", "w", "w", "n", "e", "e", "e", "e", "e", "e", "e", "e", "e", "n", "w", "w", "w", "w", "w", "w", "w", "w", "w", "n", "e", "e", "e", "e", "e", "e", "e", "e", "e", "n", "w", "w", "w", "w", "w", "w", "w", "w", "w", "n", "e", "e", "e", "e", "e", "e", "e", "e", "e", "s", "w", "w", "u", "e", "e", "s", "s", "s", "s", "s", "s", "s", "s", "w", "w", "w", "w", "w", "w", "w", "w", "w", "n", "e", "e", "e", "e", "e", "e", "e", "e", "e", "n", "w", "w", "w", "w", "w", "w", "w", "w", "w", "n", "e", "e", "e", "e", "e", "e", "e", "e", "e", "n", "w", "w", "w", "w", "w", "w", "w", "w", "w", "n", "e", "e", "e", "e", "e", "e", "e", "e", "e", "n", "w", "w", "w", "w", "w", "w", "w", "w", "w", "n", "e", "e", "e", "e", "e", "e", "e", "e", "e", "n", "w", "w", "w", "w", "w", "w", "w", "w", "w", "n", "e", "e", "e", "e", "e", "e", "e", "e", "e", "s", "w", "w", "u", "e", "e", "w", "w", "w", "n", "e", "w", "s", "w", "n", "s", "e", "s", "e", "s", "s", "s", "e", "e", "w", "w", "s", "w", "e", "n", "w", "w", "e", "e", "n", "e", "e", "w", "w", "n", "e", "e", "w", "w", "n", "e", "e", "w", "w", "w", "s", "s", "n", "n", "w", "s", "s", "n", "n", "w", "s", "s", "n", "n", "w", "s", "s", "n", "n", "w", "n", "n", "e", "e", "w", "w", "w", "w", "e", "e", "s", "e", "e", "w", "w", "w", "w", "e", "e", "s", "w", "w", "w", "e", "e", "s", "w", "w", "e", "e", "s", "w", "w", "e", "e", "s", "n", "n", "e", "s", "s", "s", "n", "e", "s", "e", "w", "n", "e", "u", "e", "e", "e", "w", "s", "w", "n", "w", "w", "s", "w", "n", "w", "n", "e", "e", "e", "e", "e", "e", "n", "e", "w", "w", "w", "w", "w", "w", "w", "w", "n", "e", "e", "e", "e", "e", "e", "e", "s", "e", "n", "w", "n", "w", "w", "w", "w", "w", "w", "n", "w", "e", "e", "e", "s", "e", "e", "n", "e", "e", "w", "s", "e", "u", "w", "w", "s", "e", "s", "e", "s", "w", "w", "s", "s", "e", "n", "e", "s", "w", "w", "n", "w", "s", "w", "n", "w", "n", "w", "n", "e", "s", "e", "n", "e", "n", "w", "w", "n", "w", "s", "n", "w" },
-    no_loop = 0, no_home = 0, hardmode = 0, vacuum = 1,
+    no_loop = 0, no_home = 0, hardmode = 0,
     mobs = {
       ["Aegis Sentry Model 60-FT"] = { kill = "sentry" },
       ["Aegis Sentry Model 62-CC"] = { kill = "sentry" },
@@ -30,7 +30,7 @@ areas = {
   },
   afield = {
     path = { "n", "e", "ne", "e", "e", "e", "s", "w", "w", "w", "w", "w", "s", "e", "e", "e", "e", "e", "s", "w", "w", "w", "w", "w", "n" },
-    no_loop = 0, no_home = 1, hardmode = 1, vacuum = 0,
+    no_loop = 0, no_home = 1, hardmode = 1,
     mobs = {
       ["A giant elite guard in training"] = { kill = "giant" },
       ["A giant elite recruit in training"] = { kill = "giant" },
@@ -39,14 +39,14 @@ areas = {
   },
   alp = {
     path = { "s", "e", "w", "n", "e", "e", "e", "e", "s", "n", "w", "w", "s", "s", "w", "w", "s", "n", "e", "e", "e", "n", "s", "s", "n", "e", "s", "s", "e", "w", "w", "w", "w", "w", "e", "n", "e", "w", "s", "e", "e", "e", "n", "n", "w", "w", "n", "n", "w", "w" },
-    no_loop = 0, no_home = 0, hardmode = 0, vacuum = 1,
+    no_loop = 0, no_home = 0, hardmode = 0,
     mobs = {
       ["Letter"] = { kill = "letter" },
     },
   },
   carnegie = {
     path = { "w", "w", "w", "nw", "ne", "e", "e", "e", "n", "e", "e", "out", "w", "w", "w", "w", "w", "w", "out", "e", "n", "w", "e", "e", "e", "e", "e", "ne", "w", "w", "w", "w", "w", "w", "w", "n", "w", "e", "e", "e", "e", "e", "e", "e", "e", "e", "w", "n", "w", "w", "w", "w", "w", "w", "w", "n", "e", "e", "e", "e", "e", "e", "e", "n", "w", "w", "w", "w", "w", "w", "w", "n", "e", "e", "e", "e", "e", "e", "e", "n", "w", "w", "w", "w", "w", "w", "w", "s", "s", "s", "s", "s", "s", "se", "e", "s", "s", "se", "e", "e" },
-    no_loop = 0, no_home = 0, hardmode = 0, vacuum = 1,
+    no_loop = 0, no_home = 0, hardmode = 0,
     mobs = {
       ["A Lady (waiting to use the toilet)"] = { kill = "human" },
       ["A New Yorker"] = { kill = "human" },
@@ -62,7 +62,7 @@ areas = {
   },
   chess = {
     path = { "s", "s", "s", "w", "w", "w", "e", "e", "e", "e", "e", "e", "e", "n", "w", "w", "w", "w", "w", "w", "w", "n", "e", "e", "e", "e", "e", "e", "e", "n", "w", "w", "w", "w", "w", "w", "w", "n", "e", "e", "e", "e", "e", "e", "e", "n", "w", "w", "w", "w", "w", "w", "w", "n", "e", "e", "e", "e", "e", "e", "e", "n", "w", "w", "w", "w", "w", "w", "w", "s", "s", "s", "s", "s", "s", "s" },
-    no_loop = 0, no_home = 0, hardmode = 0, vacuum = 1,
+    no_loop = 0, no_home = 0, hardmode = 0,
     mobs = {
       ["A Refugee"] = { kill = "human" },
       ["A War Correspondent"] = { kill = "human" },
@@ -85,7 +85,7 @@ areas = {
   },
   chicken = {
     path = { "n", "n", "n", "n", "n", "n", "n", "n", "n", "e", "s", "s", "s", "s", "s", "s", "s", "s", "s", "e", "n", "n", "n", "n", "n", "n", "n", "n", "n", "e", "s", "s", "s", "s", "s", "s", "s", "s", "s", "e", "n", "n", "n", "n", "n", "n", "n", "n", "n", "w", "w", "w", "w", "s", "s", "s", "s", "s", "s", "s", "s", "s" },
-    no_loop = 0, no_home = 0, hardmode = 0, vacuum = 1,
+    no_loop = 0, no_home = 0, hardmode = 0,
     mobs = {
       ["Chicken Foreman"] = { kill = "chicken" },
       ["Chicken Guard"] = { kill = "chicken" },
@@ -96,7 +96,7 @@ areas = {
   },
   chin = {
     path = { "e", "e", "e", "e", "e", "n", "w", "w", "w", "w", "w", "n", "e", "e", "e", "e", "e", "n", "w", "w", "w", "w", "w", "n", "e", "e", "e", "e", "e", "n", "w", "w", "w", "w", "w", "s", "s", "s", "s", "s" },
-    no_loop = 0, no_home = 0, hardmode = 0, vacuum = 1,
+    no_loop = 0, no_home = 0, hardmode = 0,
     mobs = {
       ["A Baby Chinchilla"] = { kill = "chinchilla" },
       ["A Mature Chinchilla"] = { kill = "chinchilla" },
@@ -106,12 +106,12 @@ areas = {
   },
   der = {
     path = { "w", "w", "w", "w", "w", "w", "w", "w", "n", "w", "w", "w", "w", "n", "w", "w", "w", "w", "w", "w", "w", "w", "w", "e", "s", "w", "w", "w", "n", "w", "s", "w", "n", "w", "s", "w", "w", "s", "w", "e", "s", "e", "e", "e", "e", "e", "e", "w", "w", "w", "w", "w", "s", "e", "s", "w", "w", "s", "w", "e", "s", "e", "n", "n", "e", "e", "e", "n", "e", "e", "e", "e", "e", "s", "w", "w", "w", "w", "w", "w", "w", "w", "w", "s", "e", "e", "e", "e", "s", "w", "w", "w", "s", "e", "e", "e", "e", "e", "e", "e", "n", "w", "w", "w", "w", "w", "s", "s", "e", "e", "e", "e", "e", "s", "w", "w", "w", "w", "w", "w", "s", "w", "e", "e", "e", "e", "e", "s", "e", "w", "s", "w", "w", "n", "w", "w", "w", "w", "s", "w", "s", "e", "n", "e", "s", "w", "s", "e", "e", "e", "s", "e", "n", "n", "e", "s", "s", "e", "n", "n", "e", "s", "e", "e", "n", "n", "w", "e", "n", "n", "w", "n", "n", "e", "e", "s", "s", "s", "s", "s", "w", "s", "s", "w", "s", "e", "w", "s", "w", "w", "w", "w", "w", "s", "w", "w", "e", "e", "e", "e", "e", "w", "w", "w", "s", "e", "e", "e", "w", "w", "s", "e", "e", "w", "s", "e", "e", "e", "s", "e", "e", "e", "s", "e", "n", "w", "n", "n", "w", "n", "w", "w", "n", "n", "e", "e", "e", "e", "w", "s", "e", "e", "e", "s", "w", "w", "s", "e", "w", "w", "s", "e", "e", "s", "e", "n", "e", "e", "e", "e", "w", "w", "n", "e", "e", "e", "e", "e", "e", "e", "e", "e", "n", "n", "s", "w", "n", "n", "w", "s", "s", "w", "w", "n", "e", "n", "w", "w", "n", "w", "w", "w", "w", "w", "w", "n", "e", "e", "n", "w", "w", "w", "w", "w", "n", "e", "e", "n", "w", "e", "n", "n", "e", "s", "s", "e", "n", "n", "n", "e", "s", "e", "s", "e", "e", "w", "w", "w", "s", "w", "s", "e", "e", "w", "w", "s", "s", "s", "s", "e", "n", "n", "e", "s", "s", "e", "n", "n", "n", "e", "n", "e", "s", "e", "n", "s", "s", "e", "n", "n", "e", "e", "s", "s", "w", "e", "e", "e", "n", "n", "w", "e", "e", "n", "s", "e", "w", "s", "s", "e", "n", "e", "e", "e", "e", "e", "w", "w", "w", "n", "e", "e", "e", "e", "w", "w", "w", "w", "n", "w", "e", "n", "n", "e", "s", "s", "e", "e", "e", "e", "e", "e", "s", "e", "s", "e", "e", "n", "w", "e", "e", "n", "w", "w", "w", "e", "e", "n", "n", "e", "e", "w", "w", "w", "e", "n", "w", "w", "w", "w", "s", "s", "w", "w", "w", "w", "w", "w", "n", "e", "e", "e", "e", "e", "n", "w", "w", "w", "e", "e", "n", "w", "w", "n", "n", "e", "w", "n", "w", "s", "s", "s", "w", "n", "n", "n", "n", "w", "s", "s", "s", "w", "n", "n", "s", "s", "w", "n", "w", "w", "w", "w", "w", "w", "w", "w", "w", "w", "w", "w", "s", "w", "w", "w", "s", "w", "w", "n", "n", "n", "e", "s", "e", "n", "w", "n", "n", "n", "n", "n", "n", "e", "s", "s", "s", "s", "s", "e", "n", "n", "e", "s", "s", "e", "s", "e", "e", "n", "n", "n", "e", "s", "s", "e", "s", "e", "e", "n", "w", "n", "n", "n", "e", "s", "s", "e", "n", "e", "s", "e", "n", "e", "e", "e", "n", "e" },
-    no_loop = 0, no_home = 0, hardmode = 0, vacuum = 1,
+    no_loop = 0, no_home = 0, hardmode = 0,
     default_mob = "undead",
   },
   gencorp = {
     path = { "n", "e", "n", "w", "w", "s", "e", "n", "n", "n", "n", "e", "e", "e", "e", "open door", "s", "w", "n", "w", "w", "w", "w", "w", "n", "w", "w", "e", "e", "s", "e", "n", "n", "e", "e", "push button", "w", "s", "s", "e", "e", "n", "w", "e", "s", "w", "w", "n", "n", "e", "push button", "w", "w", "s", "s", "e", "s", "s", "s", "s", "s" },
-    no_loop = 0, no_home = 0, hardmode = 0, vacuum = 1,
+    no_loop = 0, no_home = 0, hardmode = 0,
     mobs = {
       ["Compound Guard"] = { kill = "human" },
       ["Gencorps Officer"] = { kill = "human" },
@@ -122,7 +122,7 @@ areas = {
   },
   hamplant = {
     path = { "e", "e", "s", "s", "e", "e", "e", "n", "n", "e", "e", "e", "e", "e", "n", "n", "n", "s", "s", "u", "e", "w", "d", "s", "w", "w", "w", "w", "w", "s", "s", "w", "w", "w", "n", "n", "w", "w" },
-    no_loop = 0, no_home = 0, hardmode = 0, vacuum = 1,
+    no_loop = 0, no_home = 0, hardmode = 0,
     mobs = {
       ["Assembly line worker"] = { kill = "human" },
       ["Jeffrey Hamilton (owner)"] = { kill = "human" },
@@ -135,7 +135,7 @@ areas = {
   },
   ida = {
     path = { "s", "e", "e", "e", "e", "e", "e", "e", "e", "sw", "w", "w", "w", "w", "w", "w", "w", "w", "w", "w", "w", "w", "w", "w", "se", "e", "e", "e", "e", "e", "e", "e", "e", "e", "e", "e", "e", "sw", "w", "w", "w", "w", "w", "w", "w", "w", "w", "w", "se", "e", "e", "e", "e", "e", "e", "e", "e", "w", "w", "w", "w", "n", "n", "n", "n" },
-    no_loop = 0, no_home = 1, hardmode = 0, vacuum = 1,
+    no_loop = 0, no_home = 1, hardmode = 0,
     mobs = {
       ["A battle-hardened einherjer"] = { kill = "einherjer" },
       ["A blood-covered einherjer"] = { kill = "einherjer" },
@@ -143,7 +143,7 @@ areas = {
   },
   mahj = {
     path = { "w", "w", "w", "w", "n", "e", "e", "e", "e", "e", "e", "e", "e", "e", "n", "e", "w", "w", "w", "w", "w", "w", "w", "w", "w", "w", "w", "n", "e", "e", "e", "nw", "w", "w", "nw", "e", "e", "nw", "n", "s", "se", "se", "se", "e", "n", "se", "ne", "nw", "s", "n", "n", "w", "ne", "se", "w", "s", "se", "s", "e", "e", "e", "e", "e", "n", "w", "w", "ne", "e", "e", "nw", "n", "s", "s", "s", "s", "s", "sw", "s", "w", "w", "w", "w", "w" },
-    no_loop = 0, no_home = 0, hardmode = 0, vacuum = 1,
+    no_loop = 0, no_home = 0, hardmode = 0,
     mobs = {
       ["Black Chinese Dragon"] = { kill = "dragon" },
       ["Black Tiger"] = { kill = "tiger" },
@@ -166,7 +166,7 @@ areas = {
   },
   pol = {
     path = { "n", "n", "nw", "nw", "nw", "nw", "nw", "nw", "nw", "nw", "n", "se", "se", "se", "ne", "nw", "ne", "ne", "ne", "nw", "sw", "nw", "s", "nw", "s", "nw", "nw", "n", "n", "n", "n", "n", "ne", "s", "s", "s", "se", "n", "n", "n", "n", "ne", "s", "s", "s", "s", "s", "ne", "n", "n", "n", "se", "s", "s", "s", "ne", "n", "se", "n", "n", "n", "n", "n", "n", "sw", "sw", "sw", "ne", "se", "s", "s", "se", "se", "s", "se", "n", "n", "ne", "n", "n", "ne", "nw", "sw", "s", "s", "sw", "n", "n", "n", "ne", "nw", "se", "se", "se", "se", "se", "s", "sw", "sw", "s", "sw", "sw", "se", "ne", "ne", "n", "ne", "ne", "ne", "se", "sw", "sw", "sw", "s", "sw", "sw", "ne", "ne", "ne", "s", "ne", "n", "ne", "s", "s", "s", "s", "s", "s", "s", "nw", "n", "n", "nw", "s", "s", "s", "sw", "n", "n", "n", "n", "sw", "s", "s", "nw", "n", "n", "sw", "sw", "sw", "nw", "s", "se", "ne", "se", "sw", "sw", "nw", "nw", "s", "se", "se", "ne", "ne", "s", "sw", "sw", "nw", "nw", "s", "se", "se", "ne", "ne", "ne", "sw", "sw", "sw", "s", "s" },
-    no_loop = 0, no_home = 0, hardmode = 0, vacuum = 1,
+    no_loop = 0, no_home = 0, hardmode = 0,
     mobs = {
       ["Baby Dragon"] = { kill = "dragon" },
       ["Black Patrol Guard"] = { kill = "guard" },
@@ -182,7 +182,7 @@ areas = {
   },
   pol2 = {
     path = { "n", "n", "nw", "nw", "nw", "nw", "nw", "nw", "nw", "nw", "n", "se", "se", "se", "ne", "nw", "ne", "ne", "ne", "nw", "sw", "nw", "s", "nw", "s", "nw", "nw", "n", "n", "n", "n", "n", "ne", "s", "s", "s", "se", "n", "n", "n", "n", "ne", "s", "s", "s", "s", "s", "ne", "n", "n", "n", "se", "s", "s", "s", "ne", "n", "se", "n", "n", "n", "n", "n", "n", "sw", "sw", "sw", "ne", "se", "s", "s", "se", "se", "s", "se", "n", "n", "ne", "n", "n", "ne", "nw", "sw", "s", "s", "sw", "n", "n", "n", "ne", "nw", "se", "se", "se", "se", "se", "s", "sw", "sw", "s", "sw", "sw", "se", "ne", "ne", "n", "ne", "ne", "ne", "se", "sw", "sw", "sw", "s", "sw", "sw", "ne", "ne", "ne", "s", "ne", "n", "ne", "s", "s", "s", "s", "s", "s", "s", "nw", "n", "n", "nw", "s", "s", "s", "sw", "n", "n", "n", "n", "sw", "s", "s", "nw", "n", "n", "sw", "sw", "sw", "nw", "s", "se", "ne", "se", "sw", "sw", "nw", "nw", "s", "se", "se", "ne", "ne", "s", "sw", "sw", "nw", "nw", "s", "se", "se", "ne", "ne", "ne", "sw", "sw", "sw", "s", "s" },
-    no_loop = 0, no_home = 0, hardmode = 0, vacuum = 1,
+    no_loop = 0, no_home = 0, hardmode = 0,
     mobs = {
       ["Baby Dragon"] = { kill = "dragon" },
       ["Faerie Lizard"] = { kill = "lizard" },
@@ -195,7 +195,7 @@ areas = {
   },
   rimalkin = {
     path = { "e", "r", "v", "n", "q", "v", "s", "v", "q", "s", "z", "w", "n", "e", "d", "n", "q", "r", "z", "v", "s", "u", "n", "w", "w" },
-    no_loop = 0, no_home = 0, hardmode = 0, vacuum = 1,
+    no_loop = 0, no_home = 0, hardmode = 0,
     mobs = {
       ["A large Rimalkin"] = { kill = "rimalkin" },
       ["A small Rimalkin"] = { kill = "rimalkin" },
@@ -204,7 +204,7 @@ areas = {
   },
   scorp = {
     path = { "z", "w", "s", "n", "e", "s", "z", "r", "e", "e", "v", "w", "e", "q", "e", "w", "n", "e", "r", "z", "w", "w", "q" },
-    no_loop = 0, no_home = 0, hardmode = 0, vacuum = 1,
+    no_loop = 0, no_home = 0, hardmode = 0,
     mobs = {
       ["Scorpion"] = { kill = "scorpion" },
       ["Scorpion Guard"] = { kill = "scorpion" },
@@ -212,7 +212,7 @@ areas = {
   },
   smurf = {
     path = { "s", "s", "s", "w", "e", "e", "w", "s", "w", "e", "e", "e", "w", "sw", "se", "w", "e", "e", "n", "n", "s", "s", "s", "e", "e", "e", "w", "w", "w", "w", "w", "w", "n", "s", "w", "e", "s", "w", "e", "e", "e", "e", "n", "e", "s", "e", "e", "w", "s", "e", "w", "s", "w", "n", "w", "s", "n", "w", "n", "w", "s", "w", "s", "w", "e", "e", "e", "e", "e", "e", "s", "e", "w", "s", "s", "n", "n", "w", "s", "s", "n", "n", "w", "s", "n", "n", "w", "w", "w", "w", "e", "s", "w", "e", "s", "s", "n", "n", "e", "s", "s", "n", "n", "e", "s", "n", "n", "e", "s", "s", "enter", "w", "e", "e", "w", "s", "w", "e", "e", "w", "s", "w", "e", "e", "w", "s", "w", "e", "e", "w", "s", "w", "e", "e", "w", "s", "w", "e", "s", "n", "e", "out", "n" },
-    no_loop = 0, no_home = 0, hardmode = 0, vacuum = 1,
+    no_loop = 0, no_home = 0, hardmode = 0,
     mobs = {
       ["A cute and fuzzy Squirrel"] = { kill = "squirrel" },
       ["A large furry spider"] = { kill = "spider" },
@@ -237,7 +237,7 @@ areas = {
   },
   spiders = {
     path = { "z", "w", "w", "z", "v", "s", "w", "q", "q", "v", "z", "r", "w", "w", "w", "w", "r", "z", "n", "s", "q", "v", "w", "e", "z", "r", "s", "n", "v", "q", "e", "e", "e", "e", "v", "e", "e", "r", "n", "z", "r", "w", "e", "r", "s", "n", "v", "q", "z", "s", "z", "w", "v", "s", "s", "n", "n", "z", "s", "n", "z", "w", "r", "r", "z", "z", "e", "r", "r", "q", "z", "z", "w", "w", "e", "z", "r", "s", "n", "e", "r", "w", "w", "w", "z", "s", "q", "v", "s", "n", "z", "q", "v", "w", "e", "s", "z", "r", "v", "z", "r", "v", "z", "z", "r", "v", "s", "n", "q", "r", "e", "v", "q", "r", "w", "e", "q", "v", "n", "s", "r", "z", "e", "e", "n", "s", "r", "z", "e", "w", "w", "w", "z", "w", "q", "q", "n", "r", "v", "e", "e", "e", "e", "e", "r", "n", "e", "v", "e", "z", "e", "w", "v", "w", "z", "w", "n", "q", "e", "r", "z", "e", "w", "v", "q", "w", "v", "s", "v", "z", "w", "w", "r", "z", "n", "s", "q", "v", "w", "e", "z", "r", "s", "n", "v", "q", "e", "e", "r", "v", "r", "z", "q", "s", "v", "r", "e", "w", "v", "q", "z", "v", "e", "v", "q", "r", "r", "z", "z", "e", "e", "r", "v", "z", "r", "q", "r", "z", "n", "n", "q", "v", "e", "q", "v", "w", "s", "s", "z", "w", "w", "w", "q", "q", "n", "r", "e", "v", "e", "s", "n", "q", "v", "w", "q", "r", "e", "w", "v", "v", "q", "q", "z", "w", "z", "q", "n", "q", "r", "n", "r", "r", "v", "q", "z", "n", "r", "v", "e", "w", "r", "z", "q", "r", "e", "r", "q", "q", "v", "n", "r", "z", "s", "v", "n", "n", "s", "s", "r", "r", "z", "n", "n", "r", "z", "s", "s", "z", "z", "e", "e", "v", "r", "r", "e", "e", "q", "v", "n", "s", "r", "z", "e", "w", "v", "q", "s", "n", "z", "r", "w", "w", "z", "z", "v", "q", "s", "s", "z", "r", "n", "n", "z", "q", "q", "w", "z", "z", "s", "v", "e", "r", "e", "n", "s", "z", "r", "w", "z", "v", "r", "r", "z", "v", "r", "v", "q", "r", "v", "r", "e", "q", "v", "n", "s", "r", "z", "e", "w", "v", "q", "s", "n", "z", "r", "w", "z", "s", "v", "v", "q", "r", "e", "e", "n", "e", "q", "n", "s", "v", "w", "s", "w", "w", "z", "q", "z", "w", "w", "w", "n", "s", "w", "e", "v", "e", "v", "e", "w", "r", "e", "q", "z", "r", "v", "w", "v", "e", "w", "z", "v", "s", "z", "r", "w", "n", "s", "e", "v", "s", "n", "r", "e", "n", "r", "z", "s", "w", "v", "e", "e", "v", "q", "w", "w", "q", "z", "q", "n", "q", "r", "s", "v", "e", "r", "r", "v", "z", "e", "v", "s", "n", "v", "q", "e", "w", "q", "w", "r", "e", "v", "n", "s", "q", "w", "q", "r", "w", "e", "s", "n", "v", "q", "e", "v", "q", "e", "r", "s", "n", "z", "w", "r", "z", "w", "r", "z", "n", "r", "z", "n", "s", "s", "q", "n", "r", "e", "v", "q", "w", "q", "r", "z", "v", "z", "s", "v", "z", "z", "z", "w", "q", "n", "q", "z", "q", "w", "q", "e", "e", "e", "r", "n", "q", "z", "z", "q", "z", "q", "w", "q", "z", "s", "z", "w", "w", "w", "w", "w", "q", "n", "r", "e", "e", "e", "r", "n", "q", "r", "e", "e", "r" },
-    no_loop = 0, no_home = 0, hardmode = 0, vacuum = 1,
+    no_loop = 0, no_home = 0, hardmode = 0,
     mobs = {
       ["Arachnid beast"] = { kill = "spider" },
       ["Arachnid soldier"] = { kill = "spider" },
@@ -249,14 +249,14 @@ areas = {
   },
   ssafe = {
     path = { "w", "w", "w", "w", "w", "w", "w", "w", "w", "n", "e", "e", "e", "e", "e", "e", "e", "e", "e", "n", "w", "w", "w", "w", "w", "w", "w", "w", "w", "n", "e", "e", "e", "e", "e", "e", "e", "e", "e", "n", "w", "w", "w", "w", "w", "w", "w", "w", "w", "n", "e", "e", "e", "e", "e", "e", "e", "e", "e", "n", "w", "w", "w", "w", "w", "w", "w", "w", "w", "n", "e", "e", "e", "e", "e", "e", "e", "e", "e", "n", "w", "w", "w", "w", "w", "w", "w", "w", "w", "n", "e", "e", "e", "e", "e", "e", "e", "e", "e", "s", "s", "s", "s", "s", "s", "s", "s", "s" },
-    no_loop = 0, no_home = 0, hardmode = 0, vacuum = 1,
+    no_loop = 0, no_home = 0, hardmode = 0,
     mobs = {
       ["scientist"] = { kill = "human" },
     },
   },
   wseas = {
     path = { "w", "w", "w", "w", "w", "w", "nw", "w", "nw", "n", "e", "nw", "ne", "e", "w", "w", "w", "w", "w", "w", "sw", "sw", "e", "e", "se", "e", "w", "nw", "w", "w", "w", "w", "nw", "n", "w", "w", "w", "e", "e", "e", "s", "se", "se", "w", "w", "sw", "sw", "w", "w", "w", "w", "e", "e", "e", "e", "e", "w", "ne", "ne", "e", "e", "nw", "e", "e", "ne", "ne", "e", "e", "e", "e", "e", "sw", "se", "w", "s", "se", "e", "se", "e", "e", "sw", "se", "s", "se", "s", "w", "w", "w", "w", "nw", "w", "w", "nw", "w", "w", "w", "nw", "w", "w", "sw", "ne", "n", "nw", "se", "s", "e", "e", "se", "e", "e", "e", "ne", "ne", "e", "e", "e", "e", "ne", "e", "e", "e", "e" },
-    no_loop = 0, no_home = 0, hardmode = 0, vacuum = 1,
+    no_loop = 0, no_home = 0, hardmode = 0,
     mobs = {
       ["A furry spider"] = { kill = "spider" },
       ["A large black snake"] = { kill = "snake" },

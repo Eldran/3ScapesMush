@@ -15,11 +15,7 @@
 <description><![CDATA[
 Port of mip.tin + the vmip part of vmap.tin.
 
-Does the 3klient handshake on connect, parses #K%id MIP lines (gagged),
-and publishes the data for the other 3S plugins:
-  hp, hpmax, sp, spmax, gp1, gp1max, gp2, gp2max,
-  enemy_name, enemy_hp, gline1, gline2, uptime, reboot, lag,
-  vmip_ser (KEY=VALUE lines of the whole Viking BBE feed)
+
 
 Commands:
   mipecho on|off   - show/hide raw MIP lines

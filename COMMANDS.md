@@ -17,7 +17,7 @@ window keeps its position when switching. `areabot` opens it on Area,
 
 **Everything is clickable** in the Area tab (`areabot` shows/hides
 it): click an area name to start, then Walk / Pause / Stop / Resume / Kill.
-The toggle buttons AutoK (auto-ki), AutoR (auto-resume), Hard (hard mobs)
+The toggle buttons AutoR (auto-resume), Hard (hard mobs)
 and Loot light up when on. A progress bar tracks your position on the path,
 and the banner shows WALKING / FIGHTING / stopped. Hover anything for help.
 
@@ -35,7 +35,6 @@ and the banner shows WALKING / FIGHTING / stopped. Hover anything for help.
 | `v on` / `v off` | Vacuum looting on/off |
 | `pa <name>` / `pr <name>` | Party add/remove (party members don't trigger player-skip) |
 | *(automatic)* | Showing the in-game party table captures the member list by itself - members who left are dropped. `pa` is only needed for disguised characters. One list serves both bots. |
-| `.set autokill on\|off` | Auto `ki` after each kill |
 | `.set autoresume on\|off` | Auto-resume walking on "There is no X here." |
 | `.set hardmode on\|off` | Also engage 'hard' mobs (e.g. Otyg in afield) |
 | `.set stackit\|bagit\|necbagit\|bardit on\|off` | Loot styles |

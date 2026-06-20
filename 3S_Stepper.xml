@@ -15,7 +15,7 @@
 <description><![CDATA[
 Area stepper. Loads paths/mobs from 3s_areas.lua (same folder as this plugin).
 
-Commands (same as TinTin++):
+Commands 
   - <area>  or  walker <area>   start botting an area (e.g. "- aegis")
   ..          resume stepping
   .stop       stop and save position
@@ -24,10 +24,9 @@ Commands (same as TinTin++):
   .dcr        resume after a disconnect
   .stack <n>  stack up to n mobs on next move
   killbot     kill the bot completely
-  v on|off    vacuum (auto-loot rooms) on/off
   pa <name>   add party member (won't count as 'player found')
   pr <name>   remove party member
-  .set <opt> on|off   options: autokill autoresume hardmode stackit bagit necbagit bardit
+  .set <opt> on|off   options: autoresume hardmode
   .areas      list known areas
   .binfo      this help
 ]]>
@@ -44,12 +43,6 @@ Commands (same as TinTin++):
   <trigger enabled="y" name="bot_player" regexp="y" match="^(?:=P= |\[PLAYAR!\])(.+)$" send_to="12" sequence="20" keep_evaluating="y">
   <send>bot_on_player("%1")</send>
   </trigger>
-  <trigger enabled="y" name="bot_item" regexp="y" match="^=[AWI]= " send_to="12" sequence="30" keep_evaluating="y">
-  <send>bot_on_item("%0")</send>
-  </trigger>
-  <trigger enabled="y" name="bot_gold" regexp="y" match=" gold coins\.$" send_to="12" sequence="30" keep_evaluating="y">
-  <send>bot_flags.gold = true</send>
-  </trigger>
   <trigger enabled="y" name="bot_prompt" regexp="y" match="^&gt;\s*$" send_to="12" sequence="50" keep_evaluating="y">
   <send>bot_on_prompt()</send>
   </trigger>
@@ -65,7 +58,7 @@ Commands (same as TinTin++):
   <trigger enabled="y" name="bot_nomob" regexp="y" match="^There is no (.+) here\.$" send_to="12" sequence="30" keep_evaluating="y">
   <send>bot_no_mob_here("%1")</send>
   </trigger>
-  <trigger enabled="y" name="bot_killblow" regexp="y" match="dealt the killing blow to (.+)\." send_to="12" sequence="42" keep_evaluating="y">
+  <trigger enabled="y" name="bot_killblow" regexp="y" match="dealt the killing blow to (.+)\." send_to="12" sequence="30" keep_evaluating="y">
   <send>bot_on_killblow()</send>
   </trigger>
   <trigger enabled="y" name="party_hdr" regexp="y" match="^Name\s+Guild\s+\[" send_to="12" sequence="29" keep_evaluating="y">
@@ -88,7 +81,6 @@ Commands (same as TinTin++):
   <alias match="^\.dcr$"       enabled="y" regexp="y" send_to="12" sequence="100"><send>bot_resume_saved()</send></alias>
   <alias match="^killbot$"     enabled="y" regexp="y" send_to="12" sequence="100"><send>bot_kill()</send></alias>
   <alias match="^\.stack (\d+)$" enabled="y" regexp="y" send_to="12" sequence="100"><send>bot.stacknum = %1; Note("Stacking up to %1 mobs on next move")</send></alias>
-  <alias match="^v (on|off)$"  enabled="y" regexp="y" send_to="12" sequence="100"><send>bot.vacuum = ("%1" == "on"); Note("vacuum: %1")</send></alias>
   <alias match="^pa (.+)$"     enabled="y" regexp="y" send_to="12" sequence="100"><send>bot_party_add("%1")</send></alias>
   <alias match="^pr (.+)$"     enabled="y" regexp="y" send_to="12" sequence="100"><send>bot_party_remove("%1")</send></alias>
   <alias match="^\.set (\w+) (on|off)$" enabled="y" regexp="y" send_to="12" sequence="100"><send>bot_set("%1", "%2")</send></alias>
@@ -121,14 +113,15 @@ bot = {
   armed = false,         -- next prompt -> loot + walk
   mob_pending = nil,     -- mob seen this room, engage on next prompt
   paused_on_mob = false,
+  user_paused = false,   -- explicit Pause-button state (vs combat pause)
   foundmob = false,      -- saw a mob this lap (controls looping)
   lastdir = nil,
-  vacuum = true, stacknum = 0,
-  no_loop = false, no_home = false, hardmode = false,
-  opts = { autokill = false, autoresume = true,
-           stackit = false, bagit = false, necbagit = false, bardit = false },
+  stacknum = 0,
+  no_home = false, hardmode = false,
+  loop = false,          -- restart the route when it ends (Loop button)
+  opts = { autoresume = true },
 }
-bot_flags = { player = false, item = false, gold = false, corpse = false }
+bot_flags = { player = false }   -- player-in-room skip; loot flags removed with the loot system
 
 party = {}
 local last_input = os.time()
@@ -139,11 +132,6 @@ local dm_visible = (GetVariable("dm_visible") ~= "0")
 local dm_info
 local rec = nil   -- active path recording: { name=, path={}, mobs={}, kill= }
 
-local REV = { n="s", s="n", e="w", w="e", ne="sw", sw="ne", nw="se", se="nw",
-  u="d", d="u", north="south", south="north", east="west", west="east",
-  northeast="sw", southwest="ne", northwest="se", southeast="nw",
-  up="down", down="up" }
-
 local function note(s)  ColourNote("yellow", "", "[bot] " .. s) end
 local function dnote(s) ColourNote("silver", "", "[bot] " .. s) end
 
@@ -151,12 +139,10 @@ local function save_position()
   SetVariable("bot_active", bot.active and "1" or "0")
   SetVariable("save_area", bot.area or "")
   SetVariable("save_pos", tostring(bot.pos))
-  SetVariable("autokill", bot.opts.autokill and "1" or "0")
 end
 
 local function reset_room_flags()
-  bot_flags.player = false; bot_flags.item = false
-  bot_flags.gold = false;   bot_flags.corpse = false
+  bot_flags.player = false
 end
 
 -- ====================== area data ======================
@@ -173,33 +159,32 @@ local function load_areas()
 end
 
 -- ====================== looting ======================
-local function loot_room()
-  if bot_flags.item and not bot_flags.player and bot.vacuum then
-    if     bot.opts.stackit  then Execute("stackall")
-    elseif bot.opts.bagit    then Execute("_bagall")
-    elseif bot.opts.necbagit then Send("!qtrance gather")
-    elseif bot.opts.bardit   then Send("!get all") Send("!put all in disc") Send("!drop all")
-    else   Send("!get all") end
-  end
-  if bot_flags.corpse and not bot_flags.player then Send("!get corpse") end
-  if bot_flags.gold   and not bot_flags.player then Send("!get coins")  end
-end
-
 -- ====================== walking ======================
+-- reverse of each movement direction, for walking the route backwards
+local REV = {
+  n = "s", s = "n", e = "w", w = "e", u = "d", d = "u",
+  ne = "sw", sw = "ne", nw = "se", se = "nw",
+  north = "south", south = "north", east = "west", west = "east",
+  up = "down", down = "up",
+  northeast = "southwest", southwest = "northeast",
+  northwest = "southeast", southeast = "northwest",
+}
+
 local function end_of_path()
-  if bot.no_loop or not bot.foundmob then
-    note("end of path - stopping" .. (bot.no_home and "" or ", heading home"))
-    bot_kill()
-    if not bot.no_home then Send("go home") end
-  else
+  if bot.loop then
+    note("end of path - looping back to the start")
     bot.pos = 1
     bot.foundmob = false
     bot_step()
+  else
+    note("end of path - stopping" .. (bot.no_home and "" or ", heading home"))
+    bot_kill()
+    if not bot.no_home then Send("go home") end
   end
 end
 
 function bot_step()
-  if not bot.active then return end
+  if not bot.active or bot.user_paused then return end
   if bot.pos > #bot.path then end_of_path() return end
   local dir = bot.path[bot.pos]
   bot.lastdir = dir
@@ -218,6 +203,7 @@ function bot_path_undo()
     return
   end
   if not bot.active then return end
+  if bot.return_path then return end   -- ignore blocked-move undo while returning
   bot.pos = math.max(1, bot.pos - 1)
   note("could not move - path position now " .. bot.pos .. "/" .. #bot.path)
 end
@@ -225,8 +211,9 @@ end
 -- ====================== event handlers ======================
 function bot_on_room(roominfo)
   if not bot.active then return end
+  if bot.return_path then return end   -- returning to start: prompts drive it
   if bot.paused_on_mob then
-    if not bot.wimpy_warned then
+    if not bot.wimpy_warned then  -- (wimpy guard)
       bot.wimpy_warned = true
       note("WIMPY! Moved during the fight - bot stopped, position saved.")
       note("Walk back to where you fought, then '.resume' to continue.")
@@ -239,12 +226,6 @@ function bot_on_room(roominfo)
   reset_room_flags()
   bot.mob_pending = nil
   bot.armed = true
-end
-
-function bot_on_item(line)
-  if not bot.active then return end
-  bot_flags.item = true
-  if line:match("^=I=.*preserved.*corpse of.*%.$") then bot_flags.corpse = true end
 end
 
 function bot_on_player(name)
@@ -264,7 +245,7 @@ function bot_on_mob(name)
     end
     return
   end
-  if not bot.active or bot.paused_on_mob or not bot.cfg then return end
+  if not bot.active or bot.paused_on_mob or bot.return_path or not bot.cfg then return end
   local entry = bot.cfg.mobs and bot.cfg.mobs[name]
   if not entry and bot.cfg.mobs then
     -- live lines often carry tags: 'A cave troll {angry} [scratched].'
@@ -284,6 +265,8 @@ end
 
 function bot_on_prompt()
   if not bot.active then return end
+  if bot.user_paused then return end
+  if bot.return_path then bot_advance_return() return end
   if bot.mob_pending then
     local mob = bot.mob_pending
     bot.mob_pending = nil
@@ -297,11 +280,8 @@ function bot_on_prompt()
     bot.paused_on_mob = true
     bot.foundmob = true
     save_position()
-    local rev = REV[bot.lastdir or ""]
-    if rev then Send("ra " .. rev) end
     bot.current_mob = mob
     Send("kill " .. mob)
-    loot_room()
     if bot.stacknum > 0 then
       bot.stacknum = bot.stacknum - 1
       note("Stacking " .. bot.stacknum .. " more.")
@@ -314,21 +294,73 @@ function bot_on_prompt()
   end
   if bot.armed then
     bot.armed = false
-    loot_room()
     bot_step()
   end
 end
 
-function bot_on_killblow()
-  if bot.active and bot.opts.autokill then
-    DoAfterSpecial(1.5, 'Send("ki")', sendto.script)
+-- walk the route backwards to return to the start from wherever the bot is.
+-- replays the reverse of each step already taken, paced by the prompt.
+function bot_to_start()
+  if not bot.active then note("bot is not active") return end
+  local steps = bot.pos - 1
+  if steps <= 0 then note("already at the start") return end
+  local rp, skipped = {}, 0
+  for i = steps, 1, -1 do
+    local back = REV[bot.path[i]]
+    if back then rp[#rp + 1] = back else skipped = skipped + 1 end
+  end
+  if #rp == 0 then note("route has no reversible steps - can't auto-return") return end
+  bot.mob_pending = nil
+  bot.paused_on_mob = false
+  bot.armed = false
+  bot.return_path = rp
+  bot.return_sent = 0
+  note("returning to start: " .. #rp .. " steps back"
+    .. (skipped > 0 and (" (" .. skipped .. " special steps skipped)") or ""))
+  bot_advance_return()
+  ab_draw()
+end
+
+function bot_advance_return()
+  if not bot.return_path then return end
+  if bot.return_sent < #bot.return_path then
+    bot.return_sent = bot.return_sent + 1
+    Send(bot.return_path[bot.return_sent])
+  else
+    bot.return_path = nil
+    bot.pos = 1
+    bot.paused_on_mob = false
+    bot.user_paused = true
+    note("arrived at start - paused (On/Off or Pause to run again)")
+    ab_draw()
   end
 end
 
 function bot_no_mob_here(name)
-  if bot.active and bot.paused_on_mob and bot.opts.autoresume
+  if bot.active and not bot.user_paused and bot.paused_on_mob and bot.opts.autoresume
      and name == bot.current_mob then
-    DoAfterSpecial(1, "bot_resume_step()", sendto.script)
+    DoAfterSpecial(1, "bot_auto_resume()", sendto.script)
+  end
+end
+
+-- scheduled resume after a kill: recheck the pause at fire time so pausing
+-- during the post-kill delay still sticks
+function bot_auto_resume()
+  if bot.active and not bot.user_paused then bot_resume_step() end
+end
+
+-- after each killing blow, re-attack the kill target: if another of the same
+-- mob is here it engages it, otherwise the MUD's "There is no X here." fires
+-- bot_no_mob_here and the bot resumes walking. (replaces the old 'ki' autokill)
+function bot_on_killblow()
+  if bot.active and not bot.user_paused and bot.paused_on_mob then
+    DoAfterSpecial(1, "bot_reprobe()", sendto.script)
+  end
+end
+
+function bot_reprobe()
+  if bot.active and not bot.user_paused and bot.paused_on_mob and bot.current_mob then
+    Send("kill " .. bot.current_mob)
   end
 end
 
@@ -341,12 +373,12 @@ function bot_start(area)
   local cfg = areas[area]
   bot.area = area; bot.cfg = cfg
   bot.path = cfg.path; bot.pos = 1
-  bot.no_loop  = (cfg.no_loop == 1)
+  bot.loop     = (cfg.no_loop ~= 1)   -- loop by default unless the area is flagged no_loop
   bot.no_home  = (cfg.no_home == 1)
   bot.hardmode = (cfg.hardmode == 1)
-  bot.vacuum   = (cfg.vacuum ~= 0)
   bot.foundmob = false
   bot.paused_on_mob = false
+  bot.user_paused = false
   bot.active = true
   reset_room_flags()
   save_position()
@@ -357,6 +389,7 @@ end
 
 function bot_resume_step()
   if not bot.active then note("bot is not active") return end
+  bot.user_paused = false
   bot.paused_on_mob = false
   bot.mob_pending = nil
   bot.armed = false
@@ -366,7 +399,8 @@ end
 
 function bot_pause()
   if not bot.active then note("Bot is not active") return end
-  bot.paused_on_mob = true
+  bot.user_paused = true
+  bot.mob_pending = nil
   bot.armed = false
   note("paused at " .. (bot.pos) .. "/" .. #bot.path)
   ab_draw()
@@ -397,11 +431,46 @@ end
 function bot_kill()
   bot.active = false
   bot.paused_on_mob = false
+  bot.user_paused = false
   bot.armed = false
   bot.mob_pending = nil
   save_position()
   note("bot killed")
   ab_draw()
+end
+
+-- ---- simplified controls: On/Off, Pause, Reset ----
+function bot_toggle_onoff()
+  if bot.active then
+    bot_kill()                       -- Off: stop + save position
+  else
+    local area = (bot.area and bot.area ~= "" and bot.area) or GetVariable("save_area") or ""
+    local pos  = tonumber(GetVariable("save_pos") or "") or 1
+    if area == "" or not areas[area] then
+      note("no area selected - click one in the list below")
+      return
+    end
+    bot_start_quiet(area, pos)       -- On: resume saved area where it left off
+  end
+end
+
+function bot_pause_toggle()
+  if not bot.active then note("bot is not active") return end
+  if bot.user_paused then
+    bot_resume_step()                -- continue (clears user_paused)
+  else
+    bot.user_paused = true
+    bot_pause()
+  end
+end
+
+function bot_reset()
+  if not bot.active then note("bot is not active") return end
+  bot.pos = 1
+  bot.user_paused = false
+  save_position()
+  note("reset to step 1")
+  bot_resume_step()
 end
 
 function bot_set(opt, val)
@@ -464,9 +533,9 @@ function bot_help()
   - <area> / walker <area>   start botting (see .areas)
   ..        step/resume      .stop   stop+save     .pause  pause
   .resume / .dcr             resume from saved position
-  .stack <n>   stack mobs    v on|off   vacuum looting
+  .stack <n>   stack mobs
   pa/pr <name>               party add/remove (skip-protection)
-  .set <opt> on|off          autokill autoresume hardmode stackit bagit necbagit bardit
+  .set <opt> on|off          autoresume hardmode
 ]])
 end
 
@@ -544,7 +613,7 @@ function rec_save()
   local steps = {}
   for _, s in ipairs(rec.path) do steps[#steps + 1] = q(s) end
   b[#b + 1] = "    path = { " .. table.concat(steps, ", ") .. " },"
-  b[#b + 1] = "    no_loop = 0, no_home = 1, hardmode = 0, vacuum = 1,"
+  b[#b + 1] = "    no_loop = 0, no_home = 1, hardmode = 0,"
   local mobnames = {}
   for m in pairs(rec.mobs) do mobnames[#mobnames + 1] = m end
   table.sort(mobnames)
@@ -570,7 +639,7 @@ function rec_save()
   f:write(body .. block .. "}\n")
   f:close()
   -- hot-load so it's usable right away
-  local newarea = { path = {}, no_loop = 0, no_home = 1, hardmode = 0, vacuum = 1, mobs = {} }
+  local newarea = { path = {}, no_loop = 0, no_home = 1, hardmode = 0, mobs = {} }
   for _, s in ipairs(rec.path) do newarea.path[#newarea.path + 1] = s end
   for _, m in ipairs(mobnames) do newarea.mobs[m] = { kill = kill } end
   if areas[rec.name] then note("note: '" .. rec.name .. "' existed - the new recording takes over") end
@@ -620,16 +689,47 @@ function dm_button(flags, id)
   ab_draw()
 end
 
+-- ---- recording via buttons (text entry through utils.inputbox) ----
+function ab_record_start()
+  if rec then note("already recording '" .. rec.name .. "' - Save or Cancel first") return end
+  local nm = utils.inputbox("Area name (letters, digits, underscore - no spaces):", "Record new area", "")
+  if not nm then return end
+  nm = nm:gsub("%s+", "")
+  if nm == "" then return end
+  if nm:match("^[A-Za-z_]%w*$") then rec_start(nm)
+  else note("invalid area name '" .. nm .. "' - letters/digits/underscore only") end
+end
+
+function ab_record_kill()
+  if not rec then return end
+  local w = utils.inputbox("Kill command for mobs here (e.g. sentry):", "Set kill word", rec.kill or "")
+  if w then w = w:gsub("^%s+", ""):gsub("%s+$", "") end
+  if w and w ~= "" then rec_setkill(w) ab_draw() end
+end
+
+function ab_record_mob()
+  if not rec then return end
+  local m = utils.inputbox("Mob name as it appears in the room (e.g. Aegis Sentry):", "Add mob", "")
+  if m then m = m:gsub("^%s+", ""):gsub("%s+$", "") end
+  if m and m ~= "" then
+    rec.mobs[m] = true
+    note("recording: mob added - " .. m)
+    ab_draw()
+  end
+end
+
 function ab_button(flags, id)
-  if     id == "ab_walk"   then bot_resume_step()
-  elseif id == "ab_pause"  then bot_pause()
-  elseif id == "ab_stop"   then bot_stop()
-  elseif id == "ab_res"    then bot_resume_saved()
-  elseif id == "ab_kill"   then bot_kill()
-  elseif id == "ab_autok"  then bot_set("autokill", bot.opts.autokill and "off" or "on")
-  elseif id == "ab_autor"  then bot_set("autoresume", bot.opts.autoresume and "off" or "on")
-  elseif id == "ab_hard"   then bot_set("hardmode", bot.hardmode and "off" or "on")
-  elseif id == "ab_loot"   then bot.vacuum = not bot.vacuum note("vacuum: " .. (bot.vacuum and "on" or "off"))
+  if     id == "ab_onoff"  then bot_toggle_onoff()
+  elseif id == "ab_pause"  then bot_pause_toggle()
+  elseif id == "ab_reset"  then bot_reset()
+  elseif id == "ab_loop"   then bot.loop = not bot.loop note("loop: " .. (bot.loop and "on" or "off")) ab_draw()
+  elseif id == "ab_tostart"   then bot_to_start()
+  elseif id == "ab_rec"       then ab_record_start()
+  elseif id == "ab_recsave"   then rec_save()
+  elseif id == "ab_reccancel" then rec_cancel()
+  elseif id == "ab_recundo"   then rec_undo()
+  elseif id == "ab_reckill"   then ab_record_kill()
+  elseif id == "ab_recmob"    then ab_record_mob()
   elseif id == "ab_hide"   then ab_visible = false SetVariable("ab_visible", "0") WindowShow(ABWIN, false) return
   elseif id == "tab_Area" or id == "tab_Deadman" then
     ab_tab = id:sub(5)
@@ -649,8 +749,13 @@ function ab_button(flags, id)
       ab_draw()
     end
     return
-  elseif id:match("^area_") then
-    bot_start(id:sub(6))
+  elseif id == "ab_pickarea" then
+    local items = {}
+    for k in pairs(areas) do items[#items + 1] = k end
+    table.sort(items)
+    if #items == 0 then note("no areas recorded yet - use Rec to record one") return end
+    local choice = WindowMenu(ABWIN, 8, 145, table.concat(items, "|"))
+    if choice and choice ~= "" then bot_start(choice) end
     return
   end
   ab_draw()
@@ -676,13 +781,38 @@ local function ab_draw_area()
     for _ in pairs(rec.mobs) do nm = nm + 1 end
     txt2, col2 = string.format("RECORDING %s: %d steps, %d mobs", rec.name, #rec.path, nm), 0x40C0FF
   elseif not bot.active then
-    txt2, col2 = "no area loaded - click one below", 0x808080
+    txt2, col2 = "OFF - click an area below to start", 0x808080
+  elseif bot.user_paused then
+    txt2, col2 = "PAUSED " .. (bot.area or "?") .. " - press Pause to continue", 0x40C0FF
   elseif bot.paused_on_mob then
-    txt2, col2 = "FIGHTING / PAUSED - Walk resumes", 0x5050F0
+    txt2, col2 = "FIGHTING - resumes when clear", 0x5050F0
   else
     txt2, col2 = "WALKING " .. (bot.area or "?"), 0x60E060
   end
   WindowText(ABWIN, "fb", txt2, 8, 40, 0, 0, col2)
+
+  if rec then
+    -- recording controls
+    ab_btn("ab_recsave",    8, 73,  78, 93, "Save",   false, "Save this area to 3s_areas.lua")
+    ab_btn("ab_recundo",   84, 73, 154, 93, "Undo",   false, "Drop the last recorded step")
+    ab_btn("ab_reccancel",160, 73, 254, 93, "Cancel", false, "Discard this recording")
+    ab_btn("ab_hide",     256, 73, 292, 93, "X",      false, "Hide ('areabot' brings it back)")
+    ab_btn("ab_reckill",    8, 97, 150, 117, "Kill: " .. (rec.kill or "?"), rec.kill ~= nil, "Set the kill command for mobs here")
+    ab_btn("ab_recmob",   156, 97, 228, 117, "+ Mob",  false, "Add a mob name to target")
+    WindowText(ABWIN, "fb", "Route (" .. #rec.path .. " steps)", 8, 123, 0, 0, 0x40C0FF)
+    WindowText(ABWIN, "f", (#rec.path > 0 and table.concat(rec.path, " ") or "(walk to record)"):sub(1, 64), 8, 137, 0, 0, 0xC0C0C0)
+    local ml = {}
+    for m in pairs(rec.mobs) do ml[#ml + 1] = m end
+    table.sort(ml)
+    WindowText(ABWIN, "fb", "Mobs (" .. #ml .. ")", 8, 153, 0, 0, 0x40C0FF)
+    local y = 167
+    for _, m in ipairs(ml) do
+      WindowText(ABWIN, "f", m:sub(1, 44), 8, y, 0, 0, 0xC0C0C0); y = y + 13
+      if y > 290 then break end
+    end
+    return
+  end
+
   local total = #bot.path
   local done = math.max(0, bot.pos - 1)
   WindowText(ABWIN, "f", string.format("step %d / %d", done, total), 8, 55, 0, 0, 0x909090)
@@ -692,34 +822,18 @@ local function ab_draw_area()
     if fill > 0 then WindowRectOp(ABWIN, 2, 101, 58, 101 + fill, 66, 0x40A040) end
   end
   WindowRectOp(ABWIN, 1, 100, 57, 292, 67, 0x604020)
-  ab_btn("ab_walk", 8, 73, 62, 93, "Walk", false, "Step / resume ('..')")
-  ab_btn("ab_pause", 66, 73, 124, 93, "Pause", false, "Pause, keep position")
-  ab_btn("ab_stop", 128, 73, 182, 93, "Stop", false, "Stop and save position")
-  ab_btn("ab_res", 186, 73, 248, 93, "Resume", false, "Resume from saved position (.dcr)")
-  ab_btn("ab_kill", 252, 73, 292, 93, "Kill", false, "Kill the bot completely")
-  ab_btn("ab_autok", 8, 97, 70, 117, "AutoK", bot.opts.autokill, "'ki' after every killing blow")
-  ab_btn("ab_autor", 74, 97, 136, 117, "AutoR", bot.opts.autoresume, "Auto-walk on 'There is no X here.'")
-  ab_btn("ab_hard", 140, 97, 196, 117, "Hard", bot.hardmode, "Engage 'hard' mobs too")
-  ab_btn("ab_loot", 200, 97, 250, 117, "Loot", bot.vacuum, "Auto-loot rooms")
-  ab_btn("ab_hide", 256, 97, 292, 117, "X", false, "Hide ('areabot' brings it back)")
-  WindowText(ABWIN, "fb", "Areas  (click to start)", 8, 123, 0, 0, 0x40C0FF)
-  local names = {}
-  for k in pairs(areas) do names[#names + 1] = k end
-  table.sort(names)
-  local rows = math.ceil(#names / 2)
-  for i, name in ipairs(names) do
-    local col = (i <= rows) and 0 or 1
-    local row = (col == 0) and i or (i - rows)
-    local x = 8 + col * 146
-    local y = 125 + row * 14
-    local active = (bot.active and bot.area == name)
-    WindowText(ABWIN, "f", name, x, y, 0, 0, active and 0x60FF60 or 0x40C0C0)
-    local a = areas[name]
-    local nm = 0
-    if a.mobs then for _ in pairs(a.mobs) do nm = nm + 1 end end
-    WindowAddHotspot(ABWIN, "area_" .. name, x, y, x + 140, y + 13, "", "", "ab_button", "", "",
-      name .. ": " .. #a.path .. " steps, " .. nm .. " mob types - click to start", 1, 0)
-  end
+  ab_btn("ab_onoff", 8, 73, 86, 93, bot.active and "On" or "Off", bot.active, "Start / stop the bot")
+  ab_btn("ab_pause", 92, 73, 170, 93, "Pause", bot.user_paused, "Pause / continue, keep position")
+  ab_btn("ab_reset", 176, 73, 254, 93, "Reset", false, "Restart the route at step 1")
+  ab_btn("ab_hide", 256, 73, 292, 93, "X", false, "Hide ('areabot' brings it back)")
+  ab_btn("ab_loop", 8, 97, 86, 117, "Loop", bot.loop, "Loop the route when done (off = one run, then home)")
+  ab_btn("ab_tostart", 92, 97, 170, 117, "Rewind", bot.return_path ~= nil, "Walk back to the start of the route from here")
+  ab_btn("ab_rec", 176, 97, 254, 117, "Rec", false, "Record a new area path")
+  -- area picker: a dropdown menu (WindowMenu) instead of a long list
+  local nareas = 0
+  for _ in pairs(areas) do nareas = nareas + 1 end
+  local lbl = (bot.active and bot.area) and (bot.area .. "  v") or "Choose area  v"
+  ab_btn("ab_pickarea", 8, 125, 200, 145, lbl, false, "Pick an area to run (" .. nareas .. " available)")
 end
 
 local function ab_draw_deadman()
@@ -755,7 +869,10 @@ end
 function ab_draw()
   if not ab_visible then return end
   if not ab_info then ab_info = movewindow.install(ABWIN, 5, 0) end
-  local ABH = (ab_tab == "Deadman") and 104 or 306
+  local ABH
+  if ab_tab == "Deadman" then ABH = 104
+  elseif rec then ABH = 306          -- recording needs room for route + mob list
+  else ABH = 155 end                 -- compact: controls + area dropdown
   WindowCreate(ABWIN, ab_info.window_left, ab_info.window_top, ABW, ABH,
                ab_info.window_mode, ab_info.window_flags, 0x101418)
   WindowFont(ABWIN, "f",  "Lucida Console", 9, false, false, false, false)
@@ -847,7 +964,6 @@ function OnPluginInstall()
   if p and p ~= "" then
     for m in p:gmatch("[^\n]+") do party[#party + 1] = m end
   end
-  bot.opts.autokill = (GetVariable("autokill") == "1")
 end
 ]]>
 </script>
