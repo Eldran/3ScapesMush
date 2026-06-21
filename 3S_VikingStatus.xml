@@ -511,6 +511,35 @@ local function draw_settlers(my, vmip)
       i = i + per
     end
   end
+  nl(4)
+  header("-- Civic --")
+  local civ = {}
+  for entry in (vmip.SCIVICS or ""):gmatch("[^;]+") do
+    local name, lvl = entry:match("^(.-):(%d+)$")
+    if name then
+      name = name:gsub("_", " "):gsub("(%a)([%w]*)", function(a, b) return a:upper() .. b end)
+      civ[#civ + 1] = name .. " T" .. lvl
+    end
+  end
+  if #civ == 0 then
+    txt(10, "none", C.dim); nl()
+  else
+    table.sort(civ)
+    local rows = math.ceil(#civ / 2)
+    for i = 1, rows do
+      WindowText(WIN, "f", civ[i] or "", 10, ly, 0, 0, C.text)
+      WindowText(WIN, "f", civ[i + rows] or "", 170, ly, 0, 0, C.text)
+      nl(13)
+    end
+  end
+  nl(4)
+  header("-- Consumption (per cycle) --")
+  local cons = {}
+  for entry in (vmip.SCONSUME or ""):gmatch("[^;]+") do
+    local res, amt = entry:match("^(.-):(%-?%d+)$")
+    if res then cons[#cons + 1] = res .. " " .. amt end
+  end
+  txt(10, #cons > 0 and table.concat(cons, "   ") or "none", #cons > 0 and C.text or C.dim); nl()
 end
 
 local function draw_city(my, vmip)
@@ -824,6 +853,9 @@ local function draw_sea(my, vmip)
     if #ships > 0 and ships[1] ~= "" then
       nl(4)
       header("-- Fleet --")
+      if (vmip.SHPLOTS or "") ~= "" then
+        txt(10, "Ship plots: " .. (vmip.SHPLOTS or ""):gsub("|", " / "), C.dim); nl()
+      end
       -- SHIPS holds the whole fleet (name | ? | status | dest | ...)
       for i = 1, math.min(#ships, 10) do
         local f = split(ships[i], "|")

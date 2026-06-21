@@ -111,7 +111,6 @@ local function addline(chan, text)
   for name in pairs(watches) do
     if text:lower():find(name:lower(), 1, true) then
       entry.watched = true
-      Sound("SysExclamation")
       break
     end
   end

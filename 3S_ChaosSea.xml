@@ -46,8 +46,8 @@ Commands:
   <trigger enabled="y" name="cs_player" regexp="y" match="^(?:=P= |\[PLAYAR!\])(.+)$" send_to="12" sequence="25" keep_evaluating="y">
   <send>cs_on_player("%1")</send>
   </trigger>
-  <trigger enabled="y" name="cs_item" regexp="y" match="^=[AWI]= " send_to="12" sequence="35" keep_evaluating="y">
-  <send>cs_on_item("%0")</send>
+  <trigger enabled="y" name="cs_item" regexp="y" match="^=[AWI]= (.*)$" send_to="12" sequence="35" keep_evaluating="y">
+  <send>cs_on_item("%1")</send>
   </trigger>
   <trigger enabled="y" name="cs_gold" regexp="y" match=" gold coins\.$" send_to="12" sequence="35" keep_evaluating="y">
   <send>cs_flags.gold = true</send>
@@ -308,7 +308,6 @@ function cs_on_room(short)
     paused = true
     note("WIMPY! Moved during combat - bot PAUSED. Walk back to the fight room,")
     note("then click Pause to continue (or 'cs set x y z' if unsure where you are).")
-    Sound("SysExclamation")
     cs_draw()
     return
   end
@@ -330,7 +329,6 @@ local function cs_reach_goal(gw)
   pending_mob = nil
   room_goal_idx = nil; room_goal_word = nil   -- handled; don't re-pause on unpause
   note(string.upper(gw) .. " found - bot PAUSED (click Pause / 'cs pause' to continue).")
-  Sound("SysExclamation")
   cs_draw()
 end
 
@@ -530,7 +528,7 @@ function cs_watchdog()
     local st = tonumber(GetVariable("cs_sea_time"))
     if st then
       local m = math.floor((os.time() - st) / 60)
-      if m ~= cs_last_sea_min then cs_last_sea_min = m; cs_draw() end
+      if m ~= cs_last_sea_min and m <= 60 then cs_last_sea_min = m; cs_draw() end
     end
   end
   if not enabled or paused or resting or goal_found then
@@ -740,11 +738,12 @@ local C = {
 function cs_new_sea()
   if not paused then note("New Sea only works while paused (at the cask)") return end
   local n = tonumber(GetVariable("cs_seanum")) or 1
-  note("starting new sea #" .. n)
-  Send("retreat from the sea")
-  DoAfter(1, "unsetsea")
-  DoAfter(2, "setsea " .. n)
-  DoAfter(3, "enter sea")
+  note("opening cask & starting new sea #" .. n)
+  Send("open cask")
+  DoAfter(1, "retreat from the sea")
+  DoAfter(2, "unsetsea")
+  DoAfter(3, "setsea " .. n)
+  DoAfter(4, "enter sea")
   SetVariable("cs_sea_time", tostring(os.time()))   -- start the sea-age clock
   cs_draw()
 end
@@ -923,7 +922,7 @@ function cs_draw()
     if left > 0 then
       WindowText(WIN, "f", string.format("Sea age %dm   new sea in %dm", elm, left), 10, 397, 0, 0, 0x40C0FF)
     else
-      WindowText(WIN, "f", string.format("Sea age %dm   ready for a new sea", elm), 10, 397, 0, 0, 0x60E060)
+      WindowText(WIN, "f", "Ready for a new sea", 10, 397, 0, 0, 0x60E060)
     end
   else
     WindowText(WIN, "f", "no active sea timer", 10, 397, 0, 0, C.dim)

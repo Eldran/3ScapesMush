@@ -217,7 +217,6 @@ function bot_on_room(roominfo)
       bot.wimpy_warned = true
       note("WIMPY! Moved during the fight - bot stopped, position saved.")
       note("Walk back to where you fought, then '.resume' to continue.")
-      Sound("SysExclamation")
       bot_stop()
     end
     return
@@ -944,7 +943,6 @@ function bot_idle_check()
     end
     if fired then
       note("DEADMAN: " .. math.floor(dm_secs / 60) .. "m without input - bots stopped")
-      Sound("SysExclamation")
     end
   end
   dm_draw()
