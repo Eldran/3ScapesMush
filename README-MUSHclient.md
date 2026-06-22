@@ -9,7 +9,9 @@
 1. Copy this whole `mushclient` folder somewhere permanent, e.g.
    `Documents\MUSHclient-3s\`. **Keep `3s_areas.lua` in the same folder as
    the plugin XML files** - the stepper loads it from there.
-2. In MUSHclient: File -> Open World -> pick `Goran_3Scapes.mcl`.
+2. In MUSHclient: open (or create) **your own** world connected to the 3Scapes
+   mud - File -> New World, then enter the 3Scapes address and your character.
+   (Don't use someone else's `.mcl` world file - it has their login.)
 3. With the world open: File -> Plugins -> Add, and add **in this order**:
    1. `3S_MIP.xml`           (stats + Viking feed - required by the others)
    2. `3S_Stepper.xml`       (the bot)
@@ -18,13 +20,52 @@
 4. File -> Save World File, so the plugins are remembered.
 
 
-## 3. Mud-side requirement (one time)
+## 3. Mud-side setup (one time, required)
 
-The scripts rely on the same `aset` prefixes you already use on Goran
-(`=S=` room short, `=M= ` monsters, `=P= ` players, `=K=` kill blows,
-`=A=/=W=/=I=` items). Since these are stored mud-side, nothing to do -
-they carry over automatically. The old `[MONSTAR!]`-style prefixes are
-also recognized.
+The plugins detect rooms, mobs, items and players by line **prefixes** the mud
+prepends. Set them once with `aset` (stored mud-side, they persist).
+
+**Quickest option:** copy a working setup from another player in one go with
+`aset_copy <player>` — for example `aset_copy goran`. That sets all the prefixes
+below for you; skip the manual steps if you use it.
+
+To set them manually instead, type these at the mud, one per line.
+
+`<ESC>` below is the **escape character (ASCII 27)** - in the colour codes it
+must be a real ESC byte before the `[`. The colours are purely cosmetic, so the
+simplest option is to **drop the colour codes** and set just the plain marker,
+e.g. `aset room_short_pref =S=`. The plugins strip colour before matching, so
+either way works.
+
+    aset room_short_pref   <ESC>[33;1m=S=<ESC>[0m
+    aset room_short_suff   <ESC>[33;1m=S=<ESC>[0m
+    aset look_monster_pref <ESC>[36m=M= <ESC>[0m
+    aset look_player_pref  <ESC>[32;1m=P= <ESC>[0m
+    aset look_other_pref   <ESC>[34;1m=I= <ESC>[0m
+    aset look_weapon_pref  <ESC>[34;1m=W= <ESC>[0m
+    aset look_armor_pref   <ESC>[34;1m=A= <ESC>[0m
+    prompt >$nl$
+    setmod MAPCOLS CLEAR
+
+### What each bot needs
+
+- **Area bot (Stepper):** the `=S=` pair (`room_short_pref` + `room_short_suff`),
+  `=M=` (`look_monster_pref`), `=P=` (`look_player_pref`), and the `>` prompt.
+  It does **not** use the item markers.
+- **Chaos Sea bot:** all of the above **plus** the item markers `=I=`/`=W=`/`=A=`
+  (`look_other_pref` / `look_weapon_pref` / `look_armor_pref`). The `=I=` item
+  line is how it spots the cask and stops.
+- **Both:** the prompt (`prompt >$nl$`) is essential - every step, attack and the
+  cask-pause fire on the `>` line.
+
+**Not needed by either bot:** the `=X=` exit markers (`room_exits_pref/suff`) -
+the chaos bot reads exits from the room short's `(s,w)`, and the area bot follows
+a recorded path. `setmod MAPCOLS CLEAR` just keeps the room output clean.
+
+The combat/movement triggers (`dealt the killing blow to...`, `There is no X
+here.`, `You cannot go X.`) match the mud's **English messages**, not these
+prefixes - so don't translate or alter those lines. The old `[MONSTAR!]` /
+`[PLAYAR!]`-style prefixes are also recognised.
 
 ## 4. Using it
 

@@ -55,7 +55,7 @@ local visible = (GetVariable("visible") ~= "0")
 local tab = GetVariable("tab") or "Stats"
 local prev_rndz = nil                                  -- last seen RNDZ (round counter)
 local last_fight = tonumber(GetVariable("last_fight")) or 0  -- rounds the previous combat lasted
-local TABS = { "Stats", "City", "People", "Settlers", "Goods", "Holds", "Sea", "Map", "Mission", "Feeds" }
+local TABS = { "Stats", "City", "People", "Settlers", "Goods", "Holds", "Sea", "Voyage", "Map", "Mission", "Feeds" }
 
 local C = {
   bg = 0x201510, panel = 0x2A1C14, border = 0x604020,
@@ -901,9 +901,17 @@ local function draw_sea(my, vmip)
   if cw > 0 then
     header(string.format("-- Chart %dx%d  (%s) --", cw, chh, ch[3] or "?"))
     local bs = math.max(8, math.min(16, math.floor(380 / math.max(cw, 1))))
-    local x0, y0 = 14, ly + 2
+    local x0, y0 = 30, ly + 14   -- room for A-P (left) and 01-16 (top) axis labels
     local unknown = {}
+    -- X-axis: column numbers across the top
+    for col = 1, cw do
+      WindowText(WIN, "f", string.format("%02d", col),
+        x0 + (col - 1) * bs + math.floor(bs / 2) - 6, y0 - 12, 0, 0, C.label)
+    end
     for row = 0, chh - 1 do
+      -- Y-axis: row letter down the left (A, B, C, ...)
+      WindowText(WIN, "fb", string.char(65 + row),
+        x0 - 13, y0 + row * bs + math.floor(bs / 2) - 6, 0, 0, C.label)
       local rowstr = vmip[string.format("VCR%02d", row)]
       if rowstr then
         for col = 1, math.min(#rowstr, cw) do
@@ -914,6 +922,11 @@ local function draw_sea(my, vmip)
           if SEALETTER[c] then
             WindowText(WIN, "fb", c, x0 + (col - 1) * bs + math.floor(bs / 2) - 4, y0 + row * bs + math.floor(bs / 2) - 7, 0, 0, c == "S" and 0x000000 or 0xFFFFFF)
           end
+          -- click a cell to queue a voyage to that coordinate (e.g. C05)
+          local coord = string.char(65 + row) .. string.format("%02d", col)
+          WindowAddHotspot(WIN, "vq_" .. coord, x0 + (col - 1) * bs, y0 + row * bs,
+            x0 + col * bs - 1, y0 + (row + 1) * bs - 1, "", "", "vik_voyage_click", "", "",
+            "click: vvoyage queue " .. coord, 1, 0)
         end
       end
     end
@@ -927,6 +940,22 @@ local function draw_sea(my, vmip)
       WindowRectOp(WIN, 2, lx, lyy + 2, lx + 8, lyy + 10, lg[2])
       WindowText(WIN, "f", lg[1], lx + 12, lyy, 0, 0, C.dim)
       lyy = lyy + 14
+    end
+    -- clear the voyage queue
+    WindowRectOp(WIN, 2, lx, lyy + 6, lx + 70, lyy + 22, C.panel)
+    WindowRectOp(WIN, 1, lx, lyy + 6, lx + 70, lyy + 22, C.border)
+    WindowText(WIN, "fb", "Clear", lx + 20, lyy + 9, 0, 0, C.head)
+    WindowAddHotspot(WIN, "vq_clear", lx, lyy + 6, lx + 70, lyy + 22, "", "",
+      "vik_voyage_click", "", "", "Send: vvoyage clear", 1, 0)
+    -- resolve buttons
+    local ry = lyy + 28
+    for _, act in ipairs({ "Hunt", "Inspect", "Scout", "Plunder", "Evade" }) do
+      WindowRectOp(WIN, 2, lx, ry, lx + 70, ry + 16, C.panel)
+      WindowRectOp(WIN, 1, lx, ry, lx + 70, ry + 16, C.border)
+      WindowText(WIN, "fb", act, lx + 35 - #act * 4, ry + 2, 0, 0, C.head)
+      WindowAddHotspot(WIN, "vr_" .. act:lower(), lx, ry, lx + 70, ry + 16, "", "",
+        "vik_voyage_click", "", "", "Send: vvoyage resolve " .. act:lower(), 1, 0)
+      ry = ry + 19
     end
     ly = y0 + chh * bs + 6
     local u = {}
@@ -945,6 +974,47 @@ local function draw_sea(my, vmip)
       txt(10, saga[i]:sub(1, 74), C.dim); nl(13)
     end
   end
+end
+
+local function draw_voyage(my, vmip)
+  -- comma-separated "name status" list (VBOONS-style)
+  local function listsec(title, field)
+    header(title)
+    local v = vmip[field] or ""
+    if v == "" then
+      txt(10, "none", C.dim); nl()
+    else
+      for item in v:gmatch("[^,]+") do
+        txt(10, (item:gsub("^%s+", ""):gsub("%s+$", "")):sub(1, 60)); nl()
+      end
+    end
+  end
+  -- comma-separated "name:count" list (VAIDS / VGOODS-style)
+  local function countsec(title, field)
+    header(title)
+    local v = vmip[field] or ""
+    if v == "" then
+      txt(10, "none", C.dim); nl()
+    else
+      for item in v:gmatch("[^,]+") do
+        item = item:gsub("^%s+", ""):gsub("%s+$", "")
+        local name, n = item:match("^(.-):(%-?%d+)$")
+        if name then
+          name = (name:gsub("_", " "):gsub("(%a)([%w]*)", function(a, b) return a:upper() .. b end))
+          txt(10, string.format("%-30s %s", name:sub(1, 30), n)); nl()
+        else
+          txt(10, item:sub(1, 60)); nl()
+        end
+      end
+    end
+  end
+  listsec("-- Boons --", "VBOONS")
+  nl(4)
+  countsec("-- Aids --", "VAIDS")
+  nl(4)
+  countsec("-- Goods --", "VGOODS")
+  nl(4)
+  countsec("-- Curios --", "VCURIOS")
 end
 
 local function draw_map(my, vmip)
@@ -1124,6 +1194,15 @@ function vik_mnewbie(flags, id)
   elseif id == "msubmit" then Send("vmission newbie submit") end
 end
 
+-- click a voyage-chart cell to queue a destination (id = vq_<coord>, e.g. vq_C05)
+function vik_voyage_click(flags, id)
+  if id == "vq_clear" then Send("vvoyage clear") return end
+  local res = id:match("^vr_(%a+)$")
+  if res then Send("vvoyage resolve " .. res) return end
+  local coord = id:match("^vq_(%a%d+)$")
+  if coord then Send("vvoyage queue " .. coord) end
+end
+
 -- patrol: commit a new patrol (number defaults to the last patrol's count)
 function vik_patrol_commit(flags, id)
   local _, vmip = getvars()
@@ -1265,6 +1344,7 @@ function vik_draw()
   elseif tab == "Goods"  then draw_goods(my, vmip)
   elseif tab == "Holds"  then draw_holds(my, vmip)
   elseif tab == "Sea"    then draw_sea(my, vmip)
+  elseif tab == "Voyage" then draw_voyage(my, vmip)
   elseif tab == "Map"    then draw_map(my, vmip)
   elseif tab == "Mission" then draw_mission(my, vmip)
   elseif tab == "Feeds"  then draw_feeds(my, vmip)

@@ -1,5 +1,5 @@
 # 3Scapes MUSHclient - Command Guide
-*(Goran setup, updated 2026-06-10)*
+*(3Scapes mud setup, updated 2026-06-10)*
 
 All commands are typed in the normal input line. Windows are dragged by
 their title bars; positions are remembered.

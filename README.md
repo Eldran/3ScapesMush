@@ -52,5 +52,5 @@ every command.
 ## Notes
 
 - `3S_MIP` must be loaded for any of the windows to show live data.
-- Personal/session files (`Goran_3Scapes.mcl`, `3s_chat.log`, feed dumps, logs)
-  are git‑ignored.
+- Personal/session files (your MUSHclient world `*.mcl`, `3s_chat.log`, feed
+  dumps, logs) are git‑ignored — you connect with your own 3Scapes character.
