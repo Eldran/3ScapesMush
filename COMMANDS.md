@@ -201,10 +201,11 @@ use this folder as-is:
    under Game -> Configure -> Connecting (Connect: LP-mud style).
 3. File -> Plugins -> Add all six, in this order: MIP, Stepper, ChaosSea,
    VikingStatus, Chat, Mapper. Save the world file.
-4. **In the game**, set the line prefixes the plugins listen for (these are
-   mud-side, per character - copy the values from someone who has them):
-   `aset room_short`, `aset look_monster`, `aset look_player` etc. with the
-   `=S=`/`=M= `/`=P= ` style tags, and a plain `>` prompt.
+4. **In the game**, set the line prefixes the plugins listen for (mud-side, per
+   character). Use the plain tags - no colour codes, trailing space optional:
+   `aset room_short_pref =S=`, `aset look_monster_pref =M=`,
+   `aset look_player_pref =P=`, etc., plus a plain `>` prompt (`prompt >$nl$`).
+   See README-MUSHclient.md section 3 for the full list.
 5. `vtoggle` all the `mip_*` feeds ON (viking guild) for the status window.
 
 The MIP handshake, maps, settings and window positions are all per-install

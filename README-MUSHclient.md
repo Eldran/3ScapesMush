@@ -1,6 +1,8 @@
 ## 1. Install MUSHclient
 
 1. Download from https://www.gammon.com.au/downloads/dlmushclient.htm
+   (**use Firefox** for the download - other browsers may block or refuse the
+   installer.)
 2. Install (default location is fine, e.g. `C:\Program Files (x86)\MUSHclient`).
 3. Start MUSHclient once so it creates its `worlds` folder.
 
@@ -30,21 +32,23 @@ at the mud, one per line.
 <your-other-character>` copies them over — but it only works between your own
 characters, so a fresh player should just set them manually below.)
 
-`<ESC>` below is the **escape character (ASCII 27)** - in the colour codes it
-must be a real ESC byte before the `[`. The colours are purely cosmetic, so the
-simplest option is to **drop the colour codes** and set just the plain marker,
-e.g. `aset room_short_pref =S=`. The plugins strip colour before matching, so
-either way works.
+Just type the **plain markers** below - no colour codes needed. The plugins
+strip colour before matching anyway, and the triggers accept each marker with or
+without a trailing space, so the simple form is all you need:
 
-    aset room_short_pref   <ESC>[33;1m=S=<ESC>[0m
-    aset room_short_suff   <ESC>[33;1m=S=<ESC>[0m
-    aset look_monster_pref <ESC>[36m=M= <ESC>[0m
-    aset look_player_pref  <ESC>[32;1m=P= <ESC>[0m
-    aset look_other_pref   <ESC>[34;1m=I= <ESC>[0m
-    aset look_weapon_pref  <ESC>[34;1m=W= <ESC>[0m
-    aset look_armor_pref   <ESC>[34;1m=A= <ESC>[0m
+    aset room_short_pref   =S=
+    aset room_short_suff   =S=
+    aset look_monster_pref =M=
+    aset look_player_pref  =P=
+    aset look_other_pref   =I=
+    aset look_weapon_pref  =W=
+    aset look_armor_pref   =A=
     prompt >$nl$
     setmod MAPCOLS CLEAR
+
+(If you'd rather the markers were coloured, you can prepend an ANSI code, e.g.
+`<ESC>[36m=M= <ESC>[0m`, where `<ESC>` is a real escape byte - purely cosmetic,
+and really only practical from a script rather than typed by hand.)
 
 ### What each bot needs
 

@@ -27,7 +27,8 @@ Supporting files:
 
 ## Quick start
 
-1. Install MUSHclient and open your 3Scapes world.
+1. Install MUSHclient (**download it with Firefox** — other browsers may block the
+   installer) and open your 3Scapes world.
 2. Add the plugins via **File → Plugins → Add**, in this order (MIP first — the
    others depend on its feed):
    1. `3S_MIP.xml`
