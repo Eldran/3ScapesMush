@@ -37,10 +37,10 @@ Commands
   <trigger enabled="y" name="bot_room" regexp="y" match="^=S=(.*)=S=" send_to="12" sequence="20" keep_evaluating="y">
   <send>bot_on_room("%1")</send>
   </trigger>
-  <trigger enabled="y" name="bot_mob" regexp="y" match="^(?:=M= |\[MONSTAR!\])(.+)$" send_to="12" sequence="20" keep_evaluating="y">
+  <trigger enabled="y" name="bot_mob" regexp="y" match="^(?:=M= ?|\[MONSTAR!\])(.+)$" send_to="12" sequence="20" keep_evaluating="y">
   <send>bot_on_mob("%1")</send>
   </trigger>
-  <trigger enabled="y" name="bot_player" regexp="y" match="^(?:=P= |\[PLAYAR!\])(.+)$" send_to="12" sequence="20" keep_evaluating="y">
+  <trigger enabled="y" name="bot_player" regexp="y" match="^(?:=P= ?|\[PLAYAR!\])(.+)$" send_to="12" sequence="20" keep_evaluating="y">
   <send>bot_on_player("%1")</send>
   </trigger>
   <trigger enabled="y" name="bot_prompt" regexp="y" match="^&gt;\s*$" send_to="12" sequence="50" keep_evaluating="y">

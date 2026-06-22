@@ -40,13 +40,13 @@ Commands:
   <trigger enabled="y" name="cs_room" regexp="y" match="^=S=(.*)=S=" send_to="12" sequence="25" keep_evaluating="y">
   <send>cs_on_room("%1")</send>
   </trigger>
-  <trigger enabled="y" name="cs_mob" regexp="y" match="^(?:=M= |\[MONSTAR!\])(.+)$" send_to="12" sequence="25" keep_evaluating="y">
+  <trigger enabled="y" name="cs_mob" regexp="y" match="^(?:=M= ?|\[MONSTAR!\])(.+)$" send_to="12" sequence="25" keep_evaluating="y">
   <send>cs_on_mob("%1")</send>
   </trigger>
-  <trigger enabled="y" name="cs_player" regexp="y" match="^(?:=P= |\[PLAYAR!\])(.+)$" send_to="12" sequence="25" keep_evaluating="y">
+  <trigger enabled="y" name="cs_player" regexp="y" match="^(?:=P= ?|\[PLAYAR!\])(.+)$" send_to="12" sequence="25" keep_evaluating="y">
   <send>cs_on_player("%1")</send>
   </trigger>
-  <trigger enabled="y" name="cs_item" regexp="y" match="^=[AWI]= (.*)$" send_to="12" sequence="35" keep_evaluating="y">
+  <trigger enabled="y" name="cs_item" regexp="y" match="^=[AWI]= ?(.*)$" send_to="12" sequence="35" keep_evaluating="y">
   <send>cs_on_item("%1")</send>
   </trigger>
   <trigger enabled="y" name="cs_gold" regexp="y" match=" gold coins\.$" send_to="12" sequence="35" keep_evaluating="y">
