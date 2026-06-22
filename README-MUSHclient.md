@@ -23,13 +23,12 @@
 ## 3. Mud-side setup (one time, required)
 
 The plugins detect rooms, mobs, items and players by line **prefixes** the mud
-prepends. Set them once with `aset` (stored mud-side, they persist).
+prepends. Set them once with `aset` (stored mud-side, they persist). Type these
+at the mud, one per line.
 
-**Quickest option:** copy a working setup from another player in one go with
-`aset_copy <player>` — for example `aset_copy goran`. That sets all the prefixes
-below for you; skip the manual steps if you use it.
-
-To set them manually instead, type these at the mud, one per line.
+(If you already have another character of your own with these set, `aset_copy
+<your-other-character>` copies them over — but it only works between your own
+characters, so a fresh player should just set them manually below.)
 
 `<ESC>` below is the **escape character (ASCII 27)** - in the colour codes it
 must be a real ESC byte before the `[`. The colours are purely cosmetic, so the
