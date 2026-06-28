@@ -70,6 +70,9 @@ local lost = false
 local pending = {}           -- moves awaiting their room line
 local pending_time = 0
 local plan = nil             -- click-walk: { dirs={}, idx=n }
+local links = {}             -- links[mapA][mapB] = true  (linked-area graph)
+local pending_enter = nil    -- area declared by 'mm enter', consumed on next step
+local view_map = nil         -- a linked map shown for reference (nil = your live map)
 
 local DELTA = {
   n = {0,1,0},  s = {0,-1,0}, e = {1,0,0},  w = {-1,0,0},
@@ -126,6 +129,25 @@ local function room_count()
   return n
 end
 
+local function add_link(a, b)
+  if not a or not b or a == b then return end
+  links[a] = links[a] or {}; links[a][b] = true
+  links[b] = links[b] or {}; links[b][a] = true
+end
+
+-- find a room with this short name in the current map (used to snap on re-entry)
+local function find_room_by_short(short)
+  if not short or short == "" then return nil end
+  for z, zt in pairs(curmap()) do
+    for x, xt in pairs(zt) do
+      for y, r in pairs(xt) do
+        if r.short == short then return { x = x, y = y, z = z } end
+      end
+    end
+  end
+  return nil
+end
+
 local function in_combat()
   local e = GetPluginVariable(MIP_ID, "enemy_name")
   return e ~= nil and e ~= ""
@@ -155,9 +177,26 @@ function map_on_room(roominfo)
   local short, exits = parse_short(roominfo)
   if #pending > 0 then
     local dir = table.remove(pending, 1)
-    local p2 = moved(pos, dir)
-    if p2 then pos = p2 end
-    lost = false
+    view_map = nil                         -- a real step snaps the view back to your area
+    if pending_enter then
+      -- we just stepped through a declared entrance into a linked area
+      local newname = pending_enter
+      pending_enter = nil
+      add_link(mapname, newname)
+      mapname = newname
+      SetVariable("mapname", mapname)
+      if room_count() == 0 then
+        pos = { x = 0, y = 0, z = 0 }; lost = false
+      else
+        local p = find_room_by_short(short)
+        if p then pos = p; lost = false
+        else pos = { x = 0, y = 0, z = 0 }; lost = true end
+      end
+    else
+      local p2 = moved(pos, dir)
+      if p2 then pos = p2 end
+      lost = false
+    end
   else
     local cur = get_room(pos)
     if cur and cur.short == short then
@@ -298,43 +337,59 @@ function map_button(flags, id)
   elseif id == "mp_clear" then map_cmd("clear") return
   elseif id == "mp_stop"  then map_cmd("stop") return
   elseif id == "mp_hide"  then visible = false SetVariable("visible", "0") WindowShow(WIN, false) return
+  elseif id == "mp_export" then map_cmd("export") return
+  elseif id == "lnk_me"   then view_map = nil map_draw() return
+  else
+    local nm = id:match("^lnk_(.+)$")
+    if nm then
+      view_map = (nm == mapname) and nil or nm
+      map_draw()
+    end
   end
 end
 
 function map_draw()
   if not visible then return end
   if not windowinfo then windowinfo = movewindow.install(WIN, 9, 0) end
+  local shown   = view_map or mapname
+  local viewing = (shown ~= mapname)
+  local m       = maps[shown] or {}
+  local cz      = viewing and 0 or pos.z
   WindowCreate(WIN, windowinfo.window_left, windowinfo.window_top, W, H,
                windowinfo.window_mode, windowinfo.window_flags, 0x101418)
   WindowFont(WIN, "f",  "Lucida Console", 9, false, false, false, false)
   WindowFont(WIN, "fb", "Lucida Console", 9, true,  false, false, false)
   WindowRectOp(WIN, 1, 0, 0, W, H, 0x604020)
   WindowRectOp(WIN, 2, 1, 1, W - 1, 17, 0x402818)
-  WindowText(WIN, "fb", "Mapper", 8, 3, 0, 0, 0x40C0FF)
+  WindowText(WIN, "fb", "Mapper: " .. shown:sub(1, 22), 8, 3, 0, 0, 0x40C0FF)
   movewindow.add_drag_handler(WIN, 0, 0, W, 17, miniwin.cursor_hand)
   -- status
   local st, sc
-  if not tracking then st, sc = "OFF", 0x808080
+  if viewing then st, sc = "viewing (not your area)", 0xC0A040
+  elseif not tracking then st, sc = "OFF", 0x808080
   elseif bots_driving() then st, sc = "suspended (bot driving)", 0x808080
   elseif lost then st, sc = "LOST - right-click your room", 0x5050F0
   elseif plan then st, sc = "WALKING...", 0x40C0FF
   else st, sc = "tracking", 0x60E060 end
   WindowText(WIN, "fb", st, 8, 21, 0, 0, sc)
-  WindowText(WIN, "f", string.format("%s   lvl %d   %d rooms", mapname:sub(1, 18), pos.z, room_count()),
-             8, 35, 0, 0, 0x909090)
+  local rc = 0
+  for _, zt in pairs(m) do for _, xt in pairs(zt) do for _ in pairs(xt) do rc = rc + 1 end end end
+  WindowText(WIN, "f", string.format("lvl %d   %d rooms", cz, rc), 8, 35, 0, 0, 0x909090)
   btn("mp_power", 192, 21, 232, 39, tracking and "ON" or "OFF", tracking, "Mapping on/off")
   btn("mp_stop", 236, 21, 280, 39, "Stop", false, "Abort click-walking")
   btn("mp_clear", 192, 43, 246, 61, "Clear", false, "Wipe this map ('mm clear')")
+  btn("mp_export", 250, 43, 300, 61, "Save", false, "Export all maps to 3s_maps.lua (shareable)")
   btn("mp_hide", 284, 21, 332, 39, "X", false, "Hide ('mm win' brings it back)")
-  -- grid, centered on player
-  local gx, gy, gw, gh = 10, 68, 320, 300
+  -- grid, centered on player (or on the entry when viewing another map)
+  local gx, gy, gw, gh = 10, 68, 320, 282
   WindowRectOp(WIN, 2, gx, gy, gx + gw, gy + gh, 0x080A0C)
   WindowRectOp(WIN, 1, gx, gy, gx + gw, gy + gh, 0x604020)
   local cols, rows = math.floor(gw / CELL), math.floor(gh / CELL)
-  local x0 = pos.x - math.floor(cols / 2)
-  local y0 = pos.y + math.floor(rows / 2)
-  local m = curmap()
-  local zt = m[pos.z] or {}
+  local cenx = viewing and 0 or pos.x
+  local ceny = viewing and 0 or pos.y
+  local x0 = cenx - math.floor(cols / 2)
+  local y0 = ceny + math.floor(rows / 2)
+  local zt = m[cz] or {}
   for cx = 0, cols - 1 do
     for cy = 0, rows - 1 do
       local wx, wy = x0 + cx, y0 - cy
@@ -342,7 +397,6 @@ function map_draw()
       local xt = zt[wx]
       local room = xt and xt[wy]
       if room then
-        -- exit connectors first
         for dir in pairs(room.exits) do
           local d = DELTA[dir]
           if d and d[3] == 0 then
@@ -357,17 +411,35 @@ function map_draw()
         if room.exits.d or room.exits.down then
           WindowRectOp(WIN, 2, px + CELL - 6, py + CELL - 5, px + CELL - 4, py + CELL - 3, 0x30C0F0)
         end
-        local tip = (room.short or "?") .. "  (" .. wx .. "," .. wy .. ")"
-        WindowAddHotspot(WIN, "room_" .. pos.z .. "|" .. wx .. "|" .. wy,
-          px + 1, py + 1, px + CELL - 1, py + CELL - 1, "", "", "map_click", "", "",
-          tip .. "   click: walk here   right-click: I am here", 1, 0)
+        if not viewing then
+          local tip = (room.short or "?") .. "  (" .. wx .. "," .. wy .. ")"
+          WindowAddHotspot(WIN, "room_" .. cz .. "|" .. wx .. "|" .. wy,
+            px + 1, py + 1, px + CELL - 1, py + CELL - 1, "", "", "map_click", "", "",
+            tip .. "   click: walk here   right-click: I am here", 1, 0)
+        end
       end
-      if wx == pos.x and wy == pos.y then
+      if not viewing and wx == pos.x and wy == pos.y then
         WindowRectOp(WIN, 2, px + 4, py + 4, px + CELL - 4, py + CELL - 4, lost and 0x5050F0 or 0x60FF60)
       end
     end
   end
-  WindowText(WIN, "f", "click room = walk   right-click = I am here", gx, gy + gh + 4, 0, 0, 0x504540)
+  -- linked areas row (click to view; "Me" returns to your live map)
+  local ly = gy + gh + 6
+  local lk = {}
+  if links[shown] then for k in pairs(links[shown]) do lk[#lk + 1] = k end table.sort(lk) end
+  if #lk == 0 then
+    WindowText(WIN, "f", "linked: none  -  'mm enter <name>' at an entrance", gx, ly, 0, 0, 0x504540)
+  else
+    WindowText(WIN, "f", "go:", gx, ly, 0, 0, 0x808890)
+    local bx = gx + 28
+    if viewing then btn("lnk_me", bx, ly - 3, bx + 32, ly + 13, "Me", false, "Back to your area") bx = bx + 38 end
+    for _, nm in ipairs(lk) do
+      local wb = math.max(30, #nm * 7 + 8)
+      if bx + wb > gx + gw then break end
+      btn("lnk_" .. nm, bx, ly - 3, bx + wb, ly + 13, nm:sub(1, 10), nm == shown, "View '" .. nm .. "'")
+      bx = bx + wb + 4
+    end
+  end
   WindowShow(WIN, true)
 end
 
@@ -388,6 +460,9 @@ local function save_maps()
     end
   end
   SetVariable("rooms", table.concat(out, "\n"))
+  local lout = {}
+  for a, t in pairs(links) do for b in pairs(t) do lout[#lout + 1] = a .. "\t" .. b end end
+  SetVariable("links", table.concat(lout, "\n"))
   SetVariable("mapname", mapname)
   SetVariable("pos", pos.x .. "|" .. pos.y .. "|" .. pos.z)
   SetVariable("tracking", tracking and "1" or "0")
@@ -408,11 +483,82 @@ local function load_maps()
       end
     end
   end
+  local ls = GetVariable("links")
+  if ls then
+    for line in ls:gmatch("[^\n]+") do
+      local a, b = line:match("^(.-)\t(.*)$")
+      if a and b then add_link(a, b) end
+    end
+  end
   local p = GetVariable("pos")
   if p then
     local x, y, z = p:match("^(%-?%d+)|(%-?%d+)|(%-?%d+)$")
     if x then pos = { x = tonumber(x), y = tonumber(y), z = tonumber(z) } end
   end
+end
+
+-- ---------------- shared map file (3s_maps.lua) ----------------
+local function map_file_path()
+  return GetPluginInfo(GetPluginID(), 20) .. "3s_maps.lua"
+end
+
+-- write every map + the area links to a plain Lua file that can be committed/shared
+function map_export()
+  local rooms, lnks = {}, {}
+  for mn, m in pairs(maps) do
+    for z, zt in pairs(m) do
+      for x, xt in pairs(zt) do
+        for y, r in pairs(xt) do
+          local ex = {}
+          for d in pairs(r.exits) do ex[#ex + 1] = d end
+          local short = (r.short or ""):gsub("[\t\n%z\1-\31]", " ")
+          rooms[#rooms + 1] = string.format("    %q,",
+            mn .. "\t" .. z .. "\t" .. x .. "\t" .. y .. "\t" .. table.concat(ex, ",") .. "\t" .. short)
+        end
+      end
+    end
+  end
+  for a, t in pairs(links) do for b in pairs(t) do lnks[#lnks + 1] = string.format("    %q,", a .. "\t" .. b) end end
+  local f, err = io.open(map_file_path(), "w")
+  if not f then note("export failed: " .. tostring(err)) return end
+  f:write("-- 3Scapes shared maps - auto-loaded by ThreeS_Mapper. Generated; safe to commit/share.\n")
+  f:write("maps_export = {\n  rooms = {\n" .. table.concat(rooms, "\n") .. "\n  },\n")
+  f:write("  links = {\n" .. table.concat(lnks, "\n") .. "\n  },\n}\n")
+  f:close()
+  note("exported " .. #rooms .. " rooms to 3s_maps.lua")
+end
+
+-- load the shared file. Your own mapped areas stay authoritative; the file only
+-- fills areas you have no rooms for yet. Links always merge. Returns rooms added.
+function map_import()
+  local path = map_file_path()
+  local fh = io.open(path, "r"); if not fh then return nil end
+  fh:close()
+  maps_export = nil
+  local ok, err = pcall(dofile, path)
+  if not ok or type(maps_export) ~= "table" then
+    note("could not read 3s_maps.lua: " .. tostring(err)); return nil
+  end
+  local skip = {}
+  for mn, m in pairs(maps) do
+    for _, zt in pairs(m) do for _, xt in pairs(zt) do for _ in pairs(xt) do skip[mn] = true end end end
+  end
+  local keep, added = mapname, 0
+  for _, line in ipairs(maps_export.rooms or {}) do
+    local mn, z, x, y, ex, short = line:match("^(.-)\t(%-?%d+)\t(%-?%d+)\t(%-?%d+)\t(.-)\t(.*)$")
+    if mn and not skip[mn] then
+      mapname = mn
+      local r = add_room({ x = tonumber(x), y = tonumber(y), z = tonumber(z) }, short)
+      for d in ex:gmatch("[^,]+") do r.exits[d] = true end
+      added = added + 1
+    end
+  end
+  mapname = keep
+  for _, line in ipairs(maps_export.links or {}) do
+    local a, b = line:match("^(.-)\t(.*)$"); if a and b then add_link(a, b) end
+  end
+  maps_export = nil
+  return added
 end
 
 function OnPluginSaveState()
@@ -426,7 +572,7 @@ function map_cmd(args)
   if args == "" then
     note(string.format("map '%s': %d rooms, %s%s", mapname, room_count(),
       tracking and "tracking" or "off", lost and ", LOST" or ""))
-    Note("  mm on|off . mm area <name> . mm list . mm clear . mm stop . mm win")
+    Note("  mm on|off . area/enter <name> . list . clear . stop . win . export . import")
   elseif args == "on" then
     tracking = true
     SetVariable("tracking", "1")
@@ -460,9 +606,23 @@ function map_cmd(args)
     visible = not visible
     SetVariable("visible", visible and "1" or "0")
     if visible then map_draw() else WindowShow(WIN, false) end
+  elseif args == "enter" then
+    pending_enter = nil
+    note("'mm enter' cancelled")
+  elseif args == "export" then
+    map_export()
+  elseif args == "import" then
+    local n = map_import()
+    if n then note("imported " .. n .. " new rooms from 3s_maps.lua"); save_maps()
+    else note("no 3s_maps.lua found - use 'mm export' to create one") end
   else
-    local area = args:match("^area%s+(.+)$")
-    if area then
+    local enter = args:match("^enter%s+(.+)$")
+    local area  = args:match("^area%s+(.+)$")
+    if enter then
+      pending_enter = enter:lower()
+      view_map = nil
+      note("will enter '" .. pending_enter .. "' on your next step - walk through the entrance now")
+    elseif area then
       mapname = area:lower()
       SetVariable("mapname", mapname)
       pos = { x = 0, y = 0, z = 0 }
@@ -480,6 +640,7 @@ end
 
 function OnPluginInstall()
   load_maps()
+  map_import()   -- shared baseline fills any areas you haven't mapped yourself
   AddTimer("map_tick", 0, 0, 5, "", timer_flag.Enabled + timer_flag.Replace, "map_tick")
   map_draw()
 end

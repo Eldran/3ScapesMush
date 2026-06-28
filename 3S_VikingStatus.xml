@@ -481,8 +481,12 @@ local function draw_settlers(my, vmip)
   nl(4)
   header("-- Settlers --")
   local s = split(vmip.SETTLERS or "", "|")
-  txt(10, string.format("Population %s   Tax %s   Mood %s", s[1] or "?", s[2] or "?", s[4] or "?")); nl()
-  local mood = tonumber(s[4])
+  local sx = split(vmip.SETTLERX or "", "|")
+  local vals = {}
+  for i = 2, #sx do vals[#vals + 1] = sx[i] end   -- vals[N] = SETTLERX slot N
+  txt(10, string.format("Population %s/%s   Mood %s/100   Tax %s   Water %s",
+    s[1] or "?", vals[3] or "?", s[2] or "?", s[3] or "?", s[4] or "?")); nl()
+  local mood = tonumber(s[2])
   if mood then
     WindowRectOp(WIN, 2, 150, ly + 1, 400, ly + 12, C.panel)
     local fill = math.floor(248 * math.min(mood, 100) / 100)
@@ -490,25 +494,35 @@ local function draw_settlers(my, vmip)
     WindowRectOp(WIN, 1, 150, ly + 1, 400, ly + 12, C.border)
     nl(16)
   end
+  local tier = tonumber(vals[5]); tier = tier and string.format("T%.2f", tier / 100) or "?"
+  txt(10, string.format("Housing plots %s (avg %s)", vals[4] or "?", tier)); nl()
+  txt(10, string.format("Security %s%%   Dignity %s%%   Sustenance %s%%   Employment %s%%   Sentiment %s",
+    vals[11] or "?", vals[12] or "?", vals[17] or "?", vals[18] or "?", vals[19] or "?")); nl()
   nl(4)
-  header("-- Settler detail (raw) --")
-  local sx = split(vmip.SETTLERX or "", "|")
-  -- the feed has a leading empty field; real values follow it
-  local vals = {}
-  for i = 2, #sx do vals[#vals + 1] = sx[i] end
+  header("-- Settler economy --")
+  local function hm(sec)
+    sec = tonumber(sec)
+    if not sec then return "?" end
+    local h, m = math.floor(sec / 3600), math.floor((sec % 3600) / 60)
+    if h > 0 then return h .. "h " .. m .. "min" else return m .. "min" end
+  end
   if #vals == 0 then
     txt(10, "no data", C.dim); nl()
   else
-    -- index:value (slots unlabelled until their meaning is known)
+    txt(10, string.format("Tax income %s d/tick   Pop tick %s   Supply tick %s",
+      vals[15] or "?", hm(vals[21]), hm(vals[20]))); nl()
+    -- only the still-unlabelled slots (decoded ones are shown above)
+    local KNOWN = { [3] = true, [4] = true, [5] = true, [11] = true, [12] = true,
+                    [15] = true, [17] = true, [18] = true, [19] = true, [20] = true, [21] = true }
+    local unk = {}
+    for j = 1, #vals do
+      if not KNOWN[j] then unk[#unk + 1] = string.format("%2d:%-4s", j, vals[j]) end
+    end
     local per = 9
-    local i = 1
-    while i <= #vals do
+    for i = 1, #unk, per do
       local parts = {}
-      for j = i, math.min(i + per - 1, #vals) do
-        parts[#parts + 1] = string.format("%2d:%-4s", j, vals[j])
-      end
-      txt(10, table.concat(parts, " "), C.text); nl()
-      i = i + per
+      for k = i, math.min(i + per - 1, #unk) do parts[#parts + 1] = unk[k] end
+      txt(10, table.concat(parts, " "), C.dim); nl()
     end
   end
   nl(4)
@@ -841,8 +855,28 @@ local SEACHART = {
   ["S"] = 0xFFFFFF,                     -- your ship
   ["+"] = 0x60E060, [">"] = 0x60E0E0,   -- queued path / destination
   ["="] = 0xD06000,                     -- crosscurrent
+  ["^"] = 0x406060,                     -- deadwater
+  ["B"] = 0x8040C0,                     -- stormbelt
+  ["*"] = 0x308040,                     -- resolved node (yellow * = resolved harbor)
+  [" "] = 0x202830,                     -- sea
 }
-local SEALETTER = { S = true, X = true, H = true, W = true, T = true, I = true, [">"] = true }
+local SEALETTER = { S = true, X = true, H = true, W = true, T = true, I = true, [">"] = true, ["*"] = true, B = true }
+
+-- log any newly-seen unmapped chart characters to a file (once each), instead of
+-- cluttering the Sea window. File lives next to the plugin: vik_unmapped.log
+local logged_chart_chars = {}
+local function log_unmapped(unknown)
+  local new = {}
+  for c in pairs(unknown) do
+    if not logged_chart_chars[c] then logged_chart_chars[c] = true; new[#new + 1] = c end
+  end
+  if #new == 0 then return end
+  table.sort(new)
+  local f = io.open(GetPluginInfo(GetPluginID(), 20) .. "vik_unmapped.log", "a")
+  if not f then return end
+  f:write(os.date("%Y-%m-%d %H:%M:%S") .. "  unmapped chart chars: " .. table.concat(new, " ") .. "\n")
+  f:close()
+end
 
 local function draw_sea(my, vmip)
   local v = split(vmip.VOYAGE or "", "|")
@@ -936,7 +970,8 @@ local function draw_sea(my, vmip)
     local lyy = y0
     for _, lg in ipairs({ {"S ship",0xFFFFFF}, {"X objective",0xE060E0}, {"H harbor",0x40C040},
                           {"W wreck",0x4040E0}, {"T storm",0x5050F0}, {"I island",0x20C0C0},
-                          {"F fog",0x909090}, {"# unrevealed",0x303030}, {"O open sea",0xD0A000} }) do
+                          {"F fog",0x909090}, {"# unrevealed",0x303030}, {"O open sea",0xD0A000},
+                          {"* resolved",0x308040}, {"B stormbelt",0x8040C0} }) do
       WindowRectOp(WIN, 2, lx, lyy + 2, lx + 8, lyy + 10, lg[2])
       WindowText(WIN, "f", lg[1], lx + 12, lyy, 0, 0, C.dim)
       lyy = lyy + 14
@@ -947,23 +982,29 @@ local function draw_sea(my, vmip)
     WindowText(WIN, "fb", "Clear", lx + 20, lyy + 9, 0, 0, C.head)
     WindowAddHotspot(WIN, "vq_clear", lx, lyy + 6, lx + 70, lyy + 22, "", "",
       "vik_voyage_click", "", "", "Send: vvoyage clear", 1, 0)
-    -- resolve buttons
-    local ry = lyy + 28
-    for _, act in ipairs({ "Hunt", "Inspect", "Scout", "Plunder", "Evade" }) do
-      WindowRectOp(WIN, 2, lx, ry, lx + 70, ry + 16, C.panel)
-      WindowRectOp(WIN, 1, lx, ry, lx + 70, ry + 16, C.border)
-      WindowText(WIN, "fb", act, lx + 35 - #act * 4, ry + 2, 0, 0, C.head)
-      WindowAddHotspot(WIN, "vr_" .. act:lower(), lx, ry, lx + 70, ry + 16, "", "",
-        "vik_voyage_click", "", "", "Send: vvoyage resolve " .. act:lower(), 1, 0)
-      ry = ry + 19
+    -- resolve buttons: actions come from VRESOLVE and vary per encounter
+    -- (extra gap below Clear so it's not mis-tapped on mobile)
+    local ry = lyy + 47
+    local resolves = {}
+    for a in (vmip.VRESOLVE or ""):gmatch("[^,]+") do
+      local t = a:gsub("^%s+", ""):gsub("%s+$", "")
+      if t ~= "" then resolves[#resolves + 1] = t end
+    end
+    if #resolves == 0 then
+      WindowText(WIN, "f", "(no resolve pending)", lx, ry + 2, 0, 0, C.dim)
+    else
+      for _, act in ipairs(resolves) do
+        local label = act:sub(1, 1):upper() .. act:sub(2)
+        WindowRectOp(WIN, 2, lx, ry, lx + 70, ry + 16, C.panel)
+        WindowRectOp(WIN, 1, lx, ry, lx + 70, ry + 16, C.border)
+        WindowText(WIN, "fb", label, lx + 35 - #label * 4, ry + 2, 0, 0, C.head)
+        WindowAddHotspot(WIN, "vr_" .. act:lower(), lx, ry, lx + 70, ry + 16, "", "",
+          "vik_voyage_click", "", "", "Send: vvoyage resolve " .. act:lower(), 1, 0)
+        ry = ry + 19
+      end
     end
     ly = y0 + chh * bs + 6
-    local u = {}
-    for c in pairs(unknown) do u[#u + 1] = c end
-    if #u > 0 then
-      table.sort(u)
-      txt(10, "unmapped chart chars: " .. table.concat(u, " ") .. "  (tell Claude)", C.dim); nl(13)
-    end
+    log_unmapped(unknown)
   end
   -- saga
   local saga = split(vmip.VSAGA or "", ";")
@@ -1197,7 +1238,7 @@ end
 -- click a voyage-chart cell to queue a destination (id = vq_<coord>, e.g. vq_C05)
 function vik_voyage_click(flags, id)
   if id == "vq_clear" then Send("vvoyage clear") return end
-  local res = id:match("^vr_(%a+)$")
+  local res = id:match("^vr_(.+)$")
   if res then Send("vvoyage resolve " .. res) return end
   local coord = id:match("^vq_(%a%d+)$")
   if coord then Send("vvoyage queue " .. coord) end

@@ -267,4 +267,17 @@ areas = {
       ["Longtooth"] = { kill = "rat" },
     },
   },
+  smurfs2 = {
+    path = { "w", "e", "e", "n", "s", "s", "n", "w", "n", "e", "w", "n", "w" },
+    no_loop = 0, no_home = 1, hardmode = 0,
+    mobs = {
+      ["A chicken."] = { kill = "hippie" },
+      ["Birch the Handy Hippie."] = { kill = "hippie" },
+      ["Honeycomb the Teaching Hippie."] = { kill = "hippie" },
+      ["Lizzie the Pottery Hippie."] = { kill = "hippie" },
+      ["Magenta the Artistic Hippie."] = { kill = "hippie" },
+      ["Neil the Smelly Hippie."] = { kill = "hippie" },
+      ["Wheatfeld the Farming Hippie."] = { kill = "hippie" },
+    },
+  },
 }

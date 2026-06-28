@@ -135,6 +135,14 @@ local rec = nil   -- active path recording: { name=, path={}, mobs={}, kill= }
 local function note(s)  ColourNote("yellow", "", "[bot] " .. s) end
 local function dnote(s) ColourNote("silver", "", "[bot] " .. s) end
 
+-- play the Windows "ding" only if the file is actually there (a missing path
+-- would pop a MUSHclient error box, which is what we want to avoid)
+local function ding()
+  local p = "C:\\Windows\\Media\\ding.wav"
+  local f = io.open(p, "rb")
+  if f then f:close(); Sound(p) end
+end
+
 local function save_position()
   SetVariable("bot_active", bot.active and "1" or "0")
   SetVariable("save_area", bot.area or "")
@@ -943,6 +951,7 @@ function bot_idle_check()
     end
     if fired then
       note("DEADMAN: " .. math.floor(dm_secs / 60) .. "m without input - bots stopped")
+      ding()
     end
   end
   dm_draw()

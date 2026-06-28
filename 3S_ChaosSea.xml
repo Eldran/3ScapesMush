@@ -172,7 +172,9 @@ local function add_exit(p, dir)
 end
 
 -- ---------- BFS through known rooms, returns dir list ----------
-local function bfs(src, dst)
+-- allow_up: if false/nil, the path never climbs 'up' (so exploration won't
+-- wander back onto an already-cleared floor). cs_leave passes true to go home.
+local function bfs(src, dst, allow_up)
   if src.x == dst.x and src.y == dst.y and src.z == dst.z then return {} end
   local key = function(p) return p.z .. "|" .. p.x .. "|" .. p.y end
   local came = { [key(src)] = { dir = false } }
@@ -184,10 +186,12 @@ local function bfs(src, dst)
     local room = get_room(cur)
     if room then
       for dir in pairs(room.exits) do
-        local nxt = moved(cur, dir)
-        if nxt and get_room(nxt) and not came[key(nxt)] then
-          came[key(nxt)] = { dir = dir, prev = cur }
-          queue[#queue + 1] = nxt
+        if allow_up or (dir ~= "u" and dir ~= "up") then
+          local nxt = moved(cur, dir)
+          if nxt and get_room(nxt) and not came[key(nxt)] then
+            came[key(nxt)] = { dir = dir, prev = cur }
+            queue[#queue + 1] = nxt
+          end
         end
       end
     end
@@ -641,7 +645,7 @@ function cs_leave()
   if plan and plan.entry then table.insert(frontier, 1, plan.entry) end
   plan = nil
   auto = false
-  local path = bfs(pos, { x = 0, y = 0, z = 0 })
+  local path = bfs(pos, { x = 0, y = 0, z = 0 }, true)   -- going home may need to climb up
   if not path then note("no path back to start!") return end
   if #path == 0 then note("already at start") return end
   note("returning to 0 0 0 (" .. #path .. " steps)")
@@ -1009,7 +1013,7 @@ Chaos sea stepper:
       note(string.format("position set to %d %d %d", pos.x, pos.y, pos.z))
       cs_draw()
     elseif parts[1] == "find" then
-      local path = bfs(pos, { x = tonumber(parts[2]) or 0, y = tonumber(parts[3]) or 0, z = tonumber(parts[4]) or 0 })
+      local path = bfs(pos, { x = tonumber(parts[2]) or 0, y = tonumber(parts[3]) or 0, z = tonumber(parts[4]) or 0 }, true)
       Note("Result is: " .. (path and table.concat(path, " ") or "no path"))
     elseif parts[1] == "kill" then
       killname = parts[2] or "mutant"; note("kill target: " .. killname)

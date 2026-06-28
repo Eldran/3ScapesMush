@@ -1,4 +1,8 @@
 3s_chat.log
 *.mcl
 vmip_dump.txt
+vik_unmapped.log
 logs/
+3S_Spells.xml
+3S_Market.xml
+3S_StatusBar.xml
