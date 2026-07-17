@@ -1,0 +1,117 @@
+<?xml version="1.0" encoding="iso-8859-1"?>
+<!DOCTYPE muclient>
+<muclient>
+<plugin
+   name="ThreeS_VikingAlerts"
+   author="Joakim"
+   id="f60718293a4b5c6d7e8f9012"
+   language="Lua"
+   purpose="3Scapes push alerts for cart/longship/raid/voyage events"
+   date_written="2026-07-10"
+   requires="4.73"
+   version="1.0"
+   save_state="y"
+>
+<description><![CDATA[
+Fires a coloured note (and an optional bell) when something happens that you'd
+otherwise miss while doing other things: a trade cart comes back, a longship
+returns (island / Iron-Hull save / foreign tattoo / thralls), a raid returns
+with spoils, or a voyage reaches a node that needs resolving. The game lines
+still show as normal - this just adds the alert on top.
+
+Commands
+  valert                 show status
+  valert on | off        master on/off
+  valert sound on | off  bell on/off
+  valert test            fire a sample alert
+]]>
+</description>
+</plugin>
+
+<triggers>
+  <trigger enabled="y" regexp="y" sequence="20" keep_evaluating="y" omit_from_output="n"
+    match="Cart returned from" script="va_cart" />
+  <trigger enabled="y" regexp="y" sequence="20" keep_evaluating="y" omit_from_output="n"
+    match="The longship returned from the island" script="va_ship_island" />
+  <trigger enabled="y" regexp="y" sequence="20" keep_evaluating="y" omit_from_output="n"
+    match="was saved from the deep by the Iron Hull perk" script="va_ship_ironhull" />
+  <trigger enabled="y" regexp="y" sequence="20" keep_evaluating="y" omit_from_output="n"
+    match="returned with a foreign tattoo pattern" script="va_ship_tattoo" />
+  <trigger enabled="y" regexp="y" sequence="21" keep_evaluating="y" omit_from_output="n"
+    match="returned.*thrall" script="va_ship_thralls" />
+  <trigger enabled="y" regexp="y" sequence="22" keep_evaluating="y" omit_from_output="n"
+    match="returned from .+ with" script="va_raid" />
+  <trigger enabled="y" regexp="y" sequence="20" keep_evaluating="y" omit_from_output="n"
+    match="A (hidden harbor|island|wreck|great discovery|unknown site) rises off" script="va_voyage_node" />
+  <trigger enabled="y" regexp="y" sequence="20" keep_evaluating="y" omit_from_output="n"
+    match="^\[Viking-Voyage\] (.*)$" script="va_voyage_msg" />
+</triggers>
+
+<aliases>
+  <alias match="^valert$"            enabled="y" regexp="y" send_to="12" sequence="100"><send>va_status()</send></alias>
+  <alias match="^valert on$"         enabled="y" regexp="y" send_to="12" sequence="100"><send>va_set("va_on", true)</send></alias>
+  <alias match="^valert off$"        enabled="y" regexp="y" send_to="12" sequence="100"><send>va_set("va_on", false)</send></alias>
+  <alias match="^valert sound on$"   enabled="y" regexp="y" send_to="12" sequence="100"><send>va_set("va_sound", true)</send></alias>
+  <alias match="^valert sound off$"  enabled="y" regexp="y" send_to="12" sequence="100"><send>va_set("va_sound", false)</send></alias>
+  <alias match="^valert test$"       enabled="y" regexp="y" send_to="12" sequence="100"><send>va_alert("This is a test alert.", "voyage")</send></alias>
+</aliases>
+
+<script>
+<![CDATA[
+local enabled = (GetVariable("va_on")    ~= "0")
+local sound   = (GetVariable("va_sound") ~= "0")
+
+-- play the Windows "ding" only if the file exists (a missing path pops an error box)
+local function ding()
+  local p = "C:\\Windows\\Media\\ding.wav"
+  local f = io.open(p, "rb")
+  if f then f:close(); Sound(p) end
+end
+
+local COLOR = { cart = "#40C0FF", ship = "#60E060", raid = "#FFD040", voyage = "#E080E0" }
+local last_bell = 0
+
+function va_alert(msg, cat)
+  if not enabled then return end
+  ColourNote(COLOR[cat] or "orange", "", "  \187 [Viking] " .. tostring(msg))
+  if sound then
+    local t = os.clock()
+    if t - last_bell > 0.5 then last_bell = t; ding() end   -- debounce overlapping triggers
+  end
+end
+
+-- fixed-message events
+function va_cart()          va_alert("Cart returned from a trade route.",        "cart") end
+function va_ship_island()   va_alert("Longship returned from an island.",         "ship") end
+function va_ship_ironhull() va_alert("Longship saved by the Iron Hull perk.",     "ship") end
+function va_ship_tattoo()   va_alert("Longship returned with a foreign tattoo.",  "ship") end
+function va_ship_thralls()  va_alert("Longship returned with thralls.",           "ship") end
+function va_raid()          va_alert("Raid returned with spoils.",                "raid") end
+
+-- wildcard events (wildcards passed safely as args, never injected into code)
+function va_voyage_node(name, line, wc)
+  va_alert("Voyage: " .. ((wc and wc[1]) or "a node") .. " reached - resolve needed.", "voyage")
+end
+function va_voyage_msg(name, line, wc)
+  va_alert("Voyage: " .. ((wc and wc[1]) or line or ""), "voyage")
+end
+
+-- commands
+function va_set(key, on)
+  SetVariable(key, on and "1" or "0")
+  if key == "va_on" then enabled = on else sound = on end
+  va_status()
+end
+
+function va_status()
+  ColourNote("orange", "", string.format("[Viking alerts] %s   bell %s   (valert on|off, valert sound on|off)",
+    enabled and "ON" or "OFF", sound and "ON" or "OFF"))
+end
+
+function OnPluginInstall()
+  ColourNote("orange", "", "[Viking alerts] loaded - " .. (enabled and "ON" or "OFF") ..
+    ", bell " .. (sound and "ON" or "OFF") .. ".  Type 'valert' for options.")
+end
+]]>
+</script>
+</muclient>

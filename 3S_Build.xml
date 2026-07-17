@@ -1,0 +1,503 @@
+<?xml version="1.0" encoding="iso-8859-1"?>
+<!DOCTYPE muclient>
+<muclient>
+<plugin
+   name="ThreeS_Build"
+   author="Joakim"
+   id="e5f60718293a4b5c6d7e8f90"
+   language="Lua"
+   purpose="3Scapes build planner: affordability + ETA for every building upgrade"
+   date_written="2026-07-05"
+   requires="4.73"
+   version="1.0"
+   save_state="y"
+>
+<description><![CDATA[
+Build planner for the Viking settlement. Reads the live MIP feed (daler,
+warehouse stock, current building tiers) and cross-checks it against the vbuild
+cost table so you can see at a glance which buildings you can afford to start
+now. Each cost is shown in green (you have enough) or red (short), and the tier
+is coloured with the same palette as the Viking Status window.
+
+Reads the same feed as the Viking Status window (needs ThreeS_MIP loaded).
+
+Commands
+  build              show / hide the window
+  build all          toggle showing maxed (T5) buildings too
+  build refresh      re-read the feed and redraw
+  build scan         re-read building costs from 'vbuild list'
+Costs are scanned from 'vbuild list' on connect (falls back to a built-in table).
+Click a building whose whole cost is green to send  vbuild start <building>.
+]]>
+</description>
+</plugin>
+
+<triggers>
+  <!-- captures 'vbuild list' output (decorated -~* ... *~- lines); enabled only during a scan.
+       Match on the opening -~* marker alone: a long header line can wrap so its closing *~-
+       falls on the next physical line; requiring both markers would drop that header. -->
+  <trigger group="vblist" enabled="n" regexp="y" omit_from_output="y" keep_evaluating="y"
+    match="^-~\*(.*)" script="bp_scan_line" sequence="50" />
+</triggers>
+
+<aliases>
+  <alias match="^build$"            enabled="y" regexp="y" send_to="12" sequence="100"><send>bp_toggle()</send></alias>
+  <alias match="^build all$"        enabled="y" regexp="y" send_to="12" sequence="100"><send>bp_toggle_all()</send></alias>
+  <alias match="^build refresh$"    enabled="y" regexp="y" send_to="12" sequence="100"><send>bp_draw()</send></alias>
+  <alias match="^build scan$"       enabled="y" regexp="y" send_to="12" sequence="100"><send>bp_scan()</send></alias>
+</aliases>
+
+<script>
+<![CDATA[
+require "movewindow"
+
+local MIP_ID = "9a8b3c5d1e2f4a6b8c0d2e4f"
+local WIN    = "buildplan_" .. GetPluginID()
+local W      = 690
+
+local function note(s) ColourNote("orange", "", "[build] " .. s) end
+
+-- ---------------- helpers ----------------
+local function split(s, sep)
+  local t = {}
+  for part in (s .. sep):gmatch("([^" .. sep .. "]*)" .. sep) do t[#t + 1] = part end
+  return t
+end
+local function num(s) return tonumber((tostring(s or ""):match("%-?%d+"))) or 0 end
+local function comma(n)
+  local s, sign = tostring(math.floor(n)), ""
+  if s:sub(1, 1) == "-" then sign, s = "-", s:sub(2) end
+  while true do
+    local a, b = s:gsub("^(%d+)(%d%d%d)", "%1,%2")
+    s = a; if b == 0 then break end
+  end
+  return sign .. s
+end
+
+-- ---------------- cost table ----------------
+-- C(daler, {resource = amount, ...}) ; tier index = build/upgrade target tier
+local function C(d, r) return { d = d, r = r or {} } end
+-- prereqs as { {"key", tier}, ... }
+local BLD = {
+  { key="warehouse",     name="Warehouse",       req={},
+    cost={ C(1840,{timber=10}), C(6440,{iron=10,timber=25}), C(36800,{sunstone=20,iron=40,timber=100}),
+           C(151800,{sunstone=40,iron=70,runestones=10,timber=180}), C(515200,{sunstone=80,iron=120,runestones=30,timber=300}) } },
+  { key="trading_post",  name="Trading Post",    req={},
+    cost={ C(460,{}), C(4600,{iron=15,timber=20}), C(27600,{sunstone=20,iron=50,runestones=10,timber=80}),
+           C(115920,{sunstone=40,iron=90,runestones=20,timber=140}), C(404800,{sunstone=80,iron=140,runestones=40,timber=240}) } },
+  { key="dock",          name="Dock",            req={},
+    cost={ C(0,{}), C(4140,{timber=20}), C(23920,{iron=20,timber=80}),
+           C(104880,{iron=40,timber=140}), C(368000,{iron=80,timber=240}) } },
+  { key="lumber_yard",   name="Lumber Yard",     req={{"warehouse",1}},
+    cost={ C(1104,{iron=5}), C(3680,{iron=15}), C(22080,{iron=60,timber=20}),
+           C(96600,{iron=110,timber=40}), C(331200,{iron=180,timber=70}) } },
+  { key="smithy",        name="Smithy",          req={{"warehouse",1}},
+    cost={ C(1840,{timber=15}), C(5060,{iron=5,timber=25}), C(33120,{iron=40,timber=80}),
+           C(138000,{iron=80,timber=140}), C(460000,{iron=140,timber=240}) } },
+  { key="tannery",       name="Tannery",         req={{"warehouse",1}},
+    cost={ C(1380,{timber=5}), C(4600,{furs=10,timber=15}), C(25760,{iron=20,furs=40,timber=60}),
+           C(110400,{iron=40,furs=80,timber=110}), C(368000,{iron=70,furs=140,timber=180}) } },
+  { key="fishery",       name="Fishery",         req={{"warehouse",1}},
+    cost={ C(1104,{timber=10}), C(3680,{iron=5,timber=20}), C(22080,{iron=30,timber=80}),
+           C(96600,{iron=60,timber=140}), C(331200,{iron=100,timber=240}) } },
+  { key="farm",          name="Farm",            req={{"warehouse",1}},
+    cost={ C(920,{timber=5}), C(3220,{grain=20,timber=15}), C(18400,{mead=20,grain=80,timber=60}),
+           C(77280,{mead=40,grain=140,timber=110}), C(257600,{mead=70,grain=240,timber=180}) } },
+  { key="brewery",       name="Brewery",         req={{"warehouse",1},{"farm",1}},
+    cost={ C(2300,{grain=15}), C(7360,{timber=10,grain=30}), C(46000,{sunstone=10,mead=30,timber=40,grain=120}),
+           C(193200,{sunstone=20,mead=60,timber=70,grain=200}), C(644000,{sunstone=40,timber=120,mead=100,grain=320}) } },
+  { key="mead_cellar",   name="Mead Cellar",     req={{"brewery",1}},
+    cost={ C(2760,{grain=10,timber=15}), C(9200,{iron=5,grain=25,timber=30}), C(55200,{sunstone=10,iron=20,grain=80,timber=90}),
+           C(230000,{sunstone=20,iron=40,grain=140,timber=160}), C(736000,{sunstone=40,iron=70,grain=220,timber=260}) } },
+  { key="longhouse",     name="Longhouse",       req={{"warehouse",1}},
+    cost={ C(1840,{timber=20}), C(6440,{iron=10,timber=40}), C(40480,{sunstone=10,iron=40,timber=140}),
+           C(165600,{sunstone=20,iron=80,timber=240}), C(552000,{sunstone=40,iron=140,timber=400}) } },
+  { key="garrison",      name="Garrison",        req={{"longhouse",1}},
+    cost={ C(1656,{iron=10,timber=15}), C(5520,{iron=20,timber=30}), C(33120,{sunstone=10,iron=70,timber=100}),
+           C(138000,{sunstone=20,iron=120,timber=180}), C(460000,{sunstone=40,iron=200,timber=300}) } },
+  { key="palisade",      name="Palisade",        req={{"warehouse",1}},
+    cost={ C(1380,{timber=25}), C(5060,{iron=15,timber=50}), C(29440,{iron=60,timber=160}),
+           C(124200,{iron=110,timber=280}), C(423200,{iron=180,timber=460}) } },
+  { key="watchtower",    name="Watchtower",      req={{"palisade",1}},
+    cost={ C(1104,{iron=5,timber=10}), C(3680,{iron=10,timber=20}), C(22080,{sunstone=10,iron=40,timber=70}),
+           C(96600,{sunstone=20,iron=70,timber=120}), C(331200,{sunstone=40,iron=120,timber=200}) } },
+  { key="mead_hall",     name="Mead-Hall",       req={{"longhouse",1}},
+    cost={ C(2300,{timber=15,grain=20}), C(8280,{timber=25,mead=10,grain=40}), C(51520,{sunstone=20,timber=80,mead=50,grain=120}),
+           C(215280,{sunstone=40,mead=100,timber=140,grain=200}), C(717600,{sunstone=80,mead=160,timber=240,grain=320}) } },
+  { key="thrall_pen",    name="Thrall Pen",      req={{"longhouse",1}},
+    cost={ C(1656,{iron=10,timber=15}), C(5520,{iron=20,timber=30}), C(33120,{sunstone=10,iron=70,timber=100}),
+           C(138000,{sunstone=20,iron=120,timber=180}), C(460000,{sunstone=40,iron=200,timber=300}) } },
+  { key="muster_ground", name="Muster Ground",   req={{"garrison",1}},
+    cost={ C(2300,{iron=10,timber=20}), C(7360,{iron=20,timber=40}), C(46000,{sunstone=10,iron=60,timber=120}),
+           C(193200,{sunstone=20,iron=110,timber=200}), C(644000,{sunstone=40,iron=180,timber=320}) } },
+  { key="settler_plots", name="Settler Plots",   req={{"warehouse",1}},
+    cost={ C(2760,{iron=5,timber=20}), C(11040,{iron=15,grain=20,timber=40}), C(64400,{iron=60,mead=20,grain=80,timber=140}),
+           C(248400,{iron=110,grain=140,mead=40,timber=240}), C(736000,{iron=180,grain=240,mead=70,timber=400}) } },
+  { key="well",          name="Well",            req={{"warehouse",1}},
+    cost={ C(736,{iron=5,timber=5}), C(2300,{iron=10,timber=15}), C(12880,{iron=40,timber=50}),
+           C(55200,{iron=70,timber=80}), C(184000,{iron=120,timber=140}) } },
+  { key="salting_house", name="Salting House",   req={{"fishery",1}},
+    cost={ C(2760,{iron=10,timber=15}), C(9200,{iron=20,timber=30}), C(55200,{sunstone=10,iron=45,timber=90}),
+           C(230000,{sunstone=20,iron=90,timber=160}), C(736000,{sunstone=40,iron=150,timber=260}) } },
+  { key="bakehouse",     name="Bakehouse",       req={{"farm",1}},
+    cost={ C(2760,{iron=10,timber=15}), C(9200,{iron=20,timber=30}), C(55200,{sunstone=10,iron=45,timber=90}),
+           C(230000,{sunstone=20,iron=90,timber=160}), C(736000,{sunstone=40,iron=150,timber=260}) } },
+  { key="furriers_lodge",name="Furrier's Lodge", req={{"tannery",1}},
+    cost={ C(2760,{iron=10,timber=15}), C(9200,{iron=20,timber=30}), C(55200,{sunstone=10,iron=45,timber=90}),
+           C(230000,{sunstone=20,iron=90,timber=160}), C(736000,{sunstone=40,iron=150,timber=260}) } },
+  { key="mine",          name="Mine",            req={{"warehouse",1}},
+    cost={ C(1288,{iron=6,timber=12}), C(4416,{iron=15,timber=26}), C(24840,{sunstone=8,iron=35,timber=75}),
+           C(105800,{sunstone=16,iron=70,timber=135}), C(349600,{sunstone=32,iron=120,timber=220}) } },
+  { key="smelter",       name="Smelter",         req={{"mine",1}},
+    cost={ C(2760,{iron=10,timber=15}), C(9200,{iron=20,timber=30}), C(55200,{sunstone=10,iron=45,timber=90}),
+           C(230000,{sunstone=20,iron=90,timber=160}), C(736000,{sunstone=40,iron=150,timber=260}) } },
+}
+local plan = BLD          -- active cost table; replaced by a live 'vbuild list' scan when available
+local NAME = {}
+local function rebuild_names() NAME = {}; for _, b in ipairs(plan) do NAME[b.key] = b.name end end
+rebuild_names()
+-- preferred order for listing resources; any others are appended alphabetically
+local RESORDER = { "iron", "timber", "sunstone", "runestones", "furs", "fine_furs", "grain", "mead", "gemstones" }
+-- ordered keys actually present in a cost's resource table (RESORDER first, then extras)
+local function res_keys(r)
+  local out, seen = {}, {}
+  for _, k in ipairs(RESORDER) do if r[k] then out[#out + 1] = k; seen[k] = true end end
+  local extra = {}
+  for k in pairs(r) do if not seen[k] then extra[#extra + 1] = k end end
+  table.sort(extra)
+  for _, k in ipairs(extra) do out[#out + 1] = k end
+  return out
+end
+-- have-enough / short colours
+local GOOD, BAD = 0x50C050, 0x4040F0
+-- tier palette, matching the Viking Status City tab (BGR)
+local TIERCOL = { [1] = 0xF0F0F0, [2] = 0xC0C000, [3] = 0xFF8040, [4] = 0x20E0F0, [5] = 0x4040FF }
+
+-- ---------------- live 'vbuild list' scan (keeps costs in sync with the game) ----------------
+local KNOWN = { timber = true, iron = true, sunstone = true, runestones = true, furs = true,
+                fine_furs = true, grain = true, mead = true, gemstones = true }
+local function nkey(s)
+  return (tostring(s or ""):gsub("^%s+", ""):gsub("%s+$", ""):lower():gsub("'", ""):gsub("[%s%-]+", "_"))
+end
+local function parse_req(txt)
+  local req = {}
+  if not txt or txt:find("none") then return req end
+  for part in (txt .. ","):gmatch("%s*(.-)%s*,") do
+    local nm, t = part:match("^(.-)%s+tier%s+(%d+)")
+    if nm and nm ~= "" then req[#req + 1] = { nkey(nm), tonumber(t) } end
+  end
+  return req
+end
+
+local bp_parse, bp_cur, bp_cur_tier, bp_scanning = {}, nil, nil, false
+
+-- called per decorated line during a scan; runs a small state machine
+function bp_scan_line(name, line, wc)
+  -- drop the closing *~- marker (and anything after it) before trimming; on a wrapped
+  -- header line the marker is absent, which is fine.
+  local c = ((wc and wc[1]) or ""):gsub("%*~%-.*$", ""):gsub("^%s+", ""):gsub("%s+$", "")
+  if c == "" then return end
+  if c:find("Available Buildings") then bp_parse, bp_cur, bp_cur_tier, bp_scanning = {}, nil, nil, true; return end
+  if not bp_scanning then return end
+  if c:match("^Commands") or c:find("'vbuild") then bp_scan_done(); return end
+  -- building header:  "<Name>   Req: <req>"
+  local nm, req = c:match("^(.-)%s+Req:%s*(.*)$")
+  if nm and nm ~= "" then
+    bp_cur = { key = nkey(nm), name = nm, req = parse_req(req), cost = {} }
+    bp_parse[#bp_parse + 1] = bp_cur; bp_cur_tier = nil
+    return
+  end
+  -- tier line:  "Tier N: X daler"
+  local tn, dal = c:match("^Tier (%d+):%s*([%d,]+)%s*daler")
+  if tn and bp_cur then
+    local t = tonumber(tn)
+    -- safety net: if tiers stop increasing, a new building's header was missed -- start a
+    -- fresh (unnamed) entry rather than overwriting the current building's costs.
+    if bp_cur_tier and t <= bp_cur_tier then
+      bp_cur = { key = "", name = "?", req = {}, cost = {} }
+      bp_parse[#bp_parse + 1] = bp_cur
+    end
+    bp_cur_tier = t
+    bp_cur.cost[bp_cur_tier] = { d = tonumber((dal:gsub(",", ""))) or 0, r = {} }
+    return
+  end
+  -- resource line:  "+ 10 Iron, 25 Timber"  (or a bare continuation line when a cost wraps).
+  -- Names are Capitalised and may be multi-word ("Fine Furs"), so normalise every one with nkey().
+  if bp_cur and bp_cur_tier and bp_cur.cost[bp_cur_tier] then
+    local body = c:match("^%+%s*(.+)$")
+    if not body and c:match("^%d") then            -- wrapped continuation of a resource list
+      local ok = true
+      for item in (c .. ","):gmatch("%s*(.-)%s*,") do
+        local a, m = item:match("^(%d+)%s+([%a][%a ]*)$")
+        if not (a and KNOWN[nkey(m)]) then ok = false; break end
+      end
+      if ok then body = c end
+    end
+    if body then
+      for item in (body .. ","):gmatch("%s*(.-)%s*,") do
+        local a, m = item:match("^(%d+)%s+([%a][%a ]*)$")
+        if a and m then bp_cur.cost[bp_cur_tier].r[nkey(m)] = tonumber(a) end
+      end
+    end
+  end
+end
+
+function bp_scan_done()
+  if not bp_scanning then return end
+  bp_scanning = false
+  EnableTriggerGroup("vblist", false)
+  -- drop any unnamed placeholder entries (a building whose header we couldn't read)
+  local clean = {}
+  for _, b in ipairs(bp_parse) do if b.key ~= "" and b.name ~= "?" then clean[#clean + 1] = b end end
+  bp_parse = clean
+  if #bp_parse > 0 then
+    plan = bp_parse
+    rebuild_names()
+    note("scanned " .. #bp_parse .. " buildings from vbuild list")
+  else
+    note("vbuild list scan found nothing - using built-in costs")
+  end
+  bp_draw()
+end
+
+function bp_scan()
+  bp_parse, bp_cur, bp_cur_tier, bp_scanning = {}, nil, nil, true
+  EnableTriggerGroup("vblist", true)
+  SendNoEcho("vbuild list")
+  DoAfterSpecial(8, "bp_scan_done()", 12)   -- safety finalize if the closing line is missed
+end
+
+-- ---------------- feed ----------------
+local function getvars()
+  local raw = GetPluginVariable(MIP_ID, "vmip_ser") or ""
+  local vmip = {}
+  for line in raw:gmatch("[^\n]+") do
+    local k, v = line:match("^([^=]+)=(.*)$")
+    if k then vmip[k] = v end
+  end
+  return vmip
+end
+
+-- ---------------- state ----------------
+local visible  = (GetVariable("bp_visible") ~= "0")
+local show_max = (GetVariable("bp_showmax") == "1")
+local info
+local hot_keys = {}    -- hotspot id -> building key (buildable rows)
+
+-- ---------------- compute ----------------
+-- returns rows (sorted for display) + current daler
+local function compute(vmip)
+  local daler = num(vmip.DALER)
+  -- warehouse stock, summed per good
+  local stock = {}
+  for _, e in ipairs(split(vmip.WSTOCK or "", ";")) do
+    local f = split(e, "|")
+    if f[1] and f[1] ~= "" then stock[f[1]] = (stock[f[1]] or 0) + num(f[2]) end
+  end
+  -- current tiers
+  local tier = {}
+  for _, e in ipairs(split(vmip.BUILDINGS or "", ",")) do
+    local k, t = e:match("^(.-):(%d+)$")
+    if k then tier[k] = tonumber(t) end
+  end
+  -- in-progress builds (normalise name -> key form)
+  local building = {}
+  for _, e in ipairs(split(vmip.BUILDS or "", ";")) do
+    local nm = (split(e, "|")[1] or ""):lower():gsub("[%s%-]", "_")
+    if nm ~= "" then building[nm] = true end
+  end
+
+  -- match a scanned building key to the game's feed key, tolerating a dropped possessive 's'
+  -- (display "Goldsmith's" -> goldsmiths but the feed uses "goldsmith"; "Skald's Hall" -> skald_hall).
+  -- Exact match is tried first, so "furriers_lodge"/"settler_plots" still resolve to themselves.
+  local function feed_key(k)
+    if tier[k] ~= nil or building[k] then return k end
+    -- drop the possessive 's ("skalds_hall" -> "skald_hall", "goldsmiths" -> "goldsmith")
+    local ks = k:gsub("s(_)", "%1"):gsub("s$", "")
+    if tier[ks] ~= nil or building[ks] then return ks end
+    -- the game also shortens some names ("Goldsmith's Hall" -> "goldsmith"): match a feed key
+    -- that forms the leading whole word(s) of the scanned key.
+    for fk in pairs(tier)     do if ks:sub(1, #fk + 1) == fk .. "_" then return fk end end
+    for fk in pairs(building)  do if ks:sub(1, #fk + 1) == fk .. "_" then return fk end end
+    return k
+  end
+
+  local rows = {}
+  for _, b in ipairs(plan) do
+    local cur   = tier[feed_key(b.key)] or 0
+    local nextt = cur + 1
+    local row = { b = b, cur = cur, nextt = nextt }
+
+    if cur >= 5 then
+      row.cat, row.locked, row.lcol = 4, "MAX (T5)", 0x707880
+    elseif building[feed_key(b.key)] then
+      row.cat, row.locked, row.lcol = 3, "building...", 0xE0C060
+    else
+      local unmet = {}
+      for _, p in ipairs(b.req) do
+        if (tier[feed_key(p[1])] or 0) < p[2] then unmet[#unmet + 1] = (NAME[p[1]] or p[1]) .. " T" .. p[2] end
+      end
+      local c = b.cost[nextt]
+      row.cost = c
+      if #unmet > 0 then
+        row.cat, row.locked, row.lcol = 2, "needs " .. table.concat(unmet, ", "), 0x9090A0
+      else
+        -- full cost as tokens, each flagged have-enough / short
+        local toks = {}
+        local dok  = daler >= c.d
+        toks[#toks + 1] = { text = comma(c.d) .. "d", ok = dok }
+        local allok, missing = dok, (dok and 0 or 1)
+        for _, res in ipairs(res_keys(c.r)) do
+          local need = c.r[res]
+          if need then
+            local ok = (stock[res] or 0) >= need
+            toks[#toks + 1] = { text = need .. " " .. res, ok = ok }
+            if not ok then allok = false; missing = missing + 1 end
+          end
+        end
+        row.toks, row.buildable = toks, allok
+        row.cat, row.missing, row.dcost = (allok and 0 or 1), missing, c.d
+      end
+    end
+    rows[#rows + 1] = row
+  end
+
+  -- buildable first, then closest-to-affordable (fewest missing, then cheapest)
+  table.sort(rows, function(a, b)
+    if a.cat ~= b.cat then return a.cat < b.cat end
+    if a.cat == 1 and a.missing ~= b.missing then return a.missing < b.missing end
+    local ad, bd = a.dcost or (a.cost and a.cost.d) or 0, b.dcost or (b.cost and b.cost.d) or 0
+    if ad ~= bd then return ad < bd end
+    return a.b.name < b.b.name
+  end)
+  return rows, daler
+end
+
+-- ---------------- window ----------------
+local function cost_str(c)
+  local parts = { comma(c.d) .. "d" }
+  for _, res in ipairs(res_keys(c.r)) do
+    if c.r[res] then parts[#parts + 1] = c.r[res] .. " " .. res end
+  end
+  return table.concat(parts, " +")
+end
+
+function bp_draw()
+  if not visible then return end
+  local vmip = getvars()
+  local rows, daler = compute(vmip)
+  if not info then info = movewindow.install(WIN, 7, 0) end
+  hot_keys = {}
+
+  -- filter maxed unless show_max
+  local shown = {}
+  for _, r in ipairs(rows) do if show_max or r.cat ~= 4 then shown[#shown + 1] = r end end
+
+  local top, lh = 22, 13
+  local H = top + #shown * lh + 12
+  WindowCreate(WIN, info.window_left, info.window_top, W, H, info.window_mode, info.window_flags, 0x0C1014)
+  WindowFont(WIN, "f",  "Lucida Console", 9, false, false, false, false)
+  WindowFont(WIN, "fb", "Lucida Console", 9, true,  false, false, false)
+  WindowRectOp(WIN, 1, 0, 0, W, H, 0x604020)
+
+  -- title bar
+  WindowRectOp(WIN, 2, 1, 1, W - 1, 17, 0x402818)
+  WindowText(WIN, "fb", "Build Planner", 8, 3, 0, 0, 0x40C0FF)
+  WindowText(WIN, "fb", "Daler " .. comma(daler), 150, 3, 0, 0, 0x60E060)
+  WindowText(WIN, "f", show_max and "[all]" or "[+max]", W - 96, 4, 0, 0, 0x90A0B0)
+  WindowAddHotspot(WIN, "bp_all", W - 98, 2, W - 22, 15, "", "", "bp_hs", "", "", "Toggle showing maxed buildings (build all)", 1, 0)
+  WindowText(WIN, "fb", "x", W - 14, 3, 0, 0, 0xE0C8A0)
+  WindowAddHotspot(WIN, "bp_hide", W - 18, 2, W - 3, 15, "", "", "bp_hs", "", "", "Hide (build)", 1, 0)
+  movewindow.add_drag_handler(WIN, 0, 0, W - 100, 17, miniwin.cursor_hand)
+
+  local y = top
+  for _, r in ipairs(shown) do
+    -- name: green when the whole cost is affordable, grey when locked/maxed
+    local ncol = r.buildable and GOOD or ((r.cat >= 2) and 0x808890 or 0xD0C8A0)
+    WindowText(WIN, "f", string.format("%-15s", r.b.name), 8, y, 0, 0, ncol)
+    -- tier transition, coloured with the Viking Status tier palette
+    local tx = 118
+    local ccur = r.cur >= 1 and (TIERCOL[r.cur] or 0xC0C0C0) or 0x808890
+    WindowText(WIN, "f", "T" .. r.cur, tx, y, 0, 0, ccur)
+    tx = tx + WindowTextWidth(WIN, "f", "T" .. r.cur)
+    if r.nextt <= 5 then
+      WindowText(WIN, "f", ">", tx, y, 0, 0, 0x808890)
+      tx = tx + WindowTextWidth(WIN, "f", ">")
+      WindowText(WIN, "f", tostring(r.nextt), tx, y, 0, 0, TIERCOL[r.nextt] or 0xC0C0C0)
+    end
+    -- cost tokens (green = have enough, red = short) or a locked/status note
+    if r.locked then
+      WindowText(WIN, "f", r.locked, 165, y, 0, 0, r.lcol)
+    else
+      local x = 165
+      for _, t in ipairs(r.toks) do
+        WindowText(WIN, "f", t.text, x, y, 0, 0, t.ok and GOOD or BAD)
+        x = x + WindowTextWidth(WIN, "f", t.text .. "  ")
+      end
+    end
+    -- hover tooltip = full next-tier cost; affordable rows are clickable
+    local tip = r.cost and (r.b.name .. " T" .. r.nextt .. ":  " .. cost_str(r.cost)) or r.b.name
+    local hid = "bp_row_" .. r.b.key
+    if r.buildable then
+      tip = "BUILD  " .. tip .. "\n(click: vbuild start " .. r.b.key .. ")"
+      hot_keys[hid] = r.b.key
+    end
+    WindowAddHotspot(WIN, hid, 6, y, W - 4, y + lh - 1, "", "", "bp_hs", "", "", tip, 1, 0)
+    y = y + lh
+  end
+
+  WindowShow(WIN, true)
+end
+
+-- ---------------- actions ----------------
+function bp_hs(flags, id)
+  if id == "bp_hide" then
+    visible = false; SetVariable("bp_visible", "0"); WindowShow(WIN, false); return
+  elseif id == "bp_all" then
+    bp_toggle_all(); return
+  end
+  local key = hot_keys[id]
+  if key then
+    Send("vbuild start " .. key)
+    note("vbuild start " .. key)
+    DoAfterSpecial(2, "bp_draw()", 12)   -- refresh after the build registers
+  end
+end
+
+function bp_toggle()
+  visible = not visible
+  SetVariable("bp_visible", visible and "1" or "0")
+  if visible then bp_draw() else WindowShow(WIN, false) end
+end
+
+function bp_toggle_all()
+  show_max = not show_max
+  SetVariable("bp_showmax", show_max and "1" or "0")
+  bp_draw()
+end
+
+-- periodic refresh while visible (feed updates each settlement tick)
+function bp_tick()
+  if visible then bp_draw() end
+  DoAfterSpecial(6, "bp_tick()", 12)
+end
+
+-- ---------------- init ----------------
+function OnPluginSaveState()
+  SetVariable("bp_visible", visible and "1" or "0")
+  SetVariable("bp_showmax", show_max and "1" or "0")
+  if info then movewindow.save_state(WIN) end
+end
+
+function OnPluginInstall()
+  if visible then bp_draw() end
+  DoAfterSpecial(6, "bp_tick()", 12)
+  if IsConnected() then DoAfterSpecial(3, "bp_scan()", 12) end   -- scan building costs on load
+end
+
+function OnPluginConnect()
+  DoAfterSpecial(20, "bp_scan()", 12)   -- re-scan on connect, after a delay so we're logged in first
+end
+]]>
+</script>
+</muclient>

@@ -2,7 +2,12 @@
 *.mcl
 vmip_dump.txt
 vik_unmapped.log
+3s_loot.lua
+3s_autotrade.log
 logs/
 3S_Spells.xml
 3S_Market.xml
 3S_StatusBar.xml
+3S_Loot.xml
+3S_VikingStatus_Colors.xml
+3S_Raid.xml
