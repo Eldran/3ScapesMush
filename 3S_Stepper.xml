@@ -86,6 +86,7 @@ Commands
   <alias match="^\.set (\w+) (on|off)$" enabled="y" regexp="y" send_to="12" sequence="100"><send>bot_set("%1", "%2")</send></alias>
   <alias match="^\.areas$"     enabled="y" regexp="y" send_to="12" sequence="100"><send>bot_list_areas()</send></alias>
   <alias match="^\.binfo$"     enabled="y" regexp="y" send_to="12" sequence="100"><send>bot_help()</send></alias>
+  <alias match="^\.dbg (on|off)$" enabled="y" regexp="y" send_to="12" sequence="100"><send>bot_dbg = ("%1" == "on"); SetVariable("bot_dbg", bot_dbg and "1" or "0"); Note("[bot] debug " .. "%1")</send></alias>
   <alias match="^areabot$"    enabled="y" regexp="y" send_to="12" sequence="100"><send>ab_toggle_window()</send></alias>
   <alias match="^record$"            enabled="y" regexp="y" send_to="12" sequence="90"><send>rec_status()</send></alias>
   <alias match="^record (?:stop|save)$" enabled="y" regexp="y" send_to="12" sequence="90"><send>rec_save()</send></alias>
@@ -134,6 +135,15 @@ local rec = nil   -- active path recording: { name=, path={}, mobs={}, kill= }
 
 local function note(s)  ColourNote("yellow", "", "[bot] " .. s) end
 local function dnote(s) ColourNote("silver", "", "[bot] " .. s) end
+bot_dbg = (GetVariable("bot_dbg") == "1")   -- .dbg on|off : trace mob-detection decisions
+local function dbg(s) if bot_dbg then ColourNote("dimgray", "", "[bot dbg] " .. s) end end
+
+-- normalise a mob name for matching: strip {..}/[..] status tags and any trailing period/space,
+-- so a recorded key matches the live line whether or not it carries conditions or punctuation.
+-- (older areas were captured clean; newer ones kept a trailing '.', which broke prefix matching.)
+local function mob_norm(s)
+  return (tostring(s):gsub("%s*%b{}", ""):gsub("%s*%b[]", ""):gsub("[%.%s]+$", ""))
+end
 
 -- play the Windows "ding" only if the file is actually there (a missing path
 -- would pop a MUSHclient error box, which is what we want to avoid)
@@ -166,7 +176,6 @@ local function load_areas()
   end
 end
 
--- ====================== looting ======================
 -- ====================== walking ======================
 -- reverse of each movement direction, for walking the route backwards
 local REV = {
@@ -183,7 +192,10 @@ local function end_of_path()
     note("end of path - looping back to the start")
     bot.pos = 1
     bot.foundmob = false
-    bot_step()
+    -- restart exactly like a fresh run: bot_resume_step() re-glances the start room (so its
+    -- mob is detected) and clears combat state (paused_on_mob / mob_pending / armed). Using a
+    -- bare bot_step() here skipped the glance, so subsequent laps walked past mobs without killing.
+    bot_resume_step()
   else
     note("end of path - stopping" .. (bot.no_home and "" or ", heading home"))
     bot_kill()
@@ -231,6 +243,8 @@ function bot_on_room(roominfo)
   end
   bot.wimpy_warned = false
   reset_room_flags()
+  dbg("=S= room '" .. tostring(roominfo):sub(1, 30) .. "' -> clearing mob_pending, arming"
+    .. (bot.mob_pending and ("  (DROPPED pending kill '" .. bot.mob_pending .. "')") or ""))
   bot.mob_pending = nil
   bot.armed = true
 end
@@ -245,19 +259,28 @@ end
 
 function bot_on_mob(name)
   if rec then
-    local clean = name:gsub("%s*%b{}", ""):gsub("%s*%b[]", ""):gsub("%s+$", "")
+    local clean = mob_norm(name)
     if #clean > 0 and not rec.mobs[clean] then
       rec.mobs[clean] = true
       note("recording: mob noted - " .. clean)
     end
     return
   end
-  if not bot.active or bot.paused_on_mob or bot.return_path or not bot.cfg then return end
-  local entry = bot.cfg.mobs and bot.cfg.mobs[name]
+  if not bot.active or bot.paused_on_mob or bot.return_path or not bot.cfg then
+    dbg("=M= '" .. name .. "' IGNORED (active=" .. tostring(bot.active)
+      .. " paused_on_mob=" .. tostring(bot.paused_on_mob)
+      .. " returning=" .. tostring(bot.return_path ~= nil)
+      .. " cfg=" .. tostring(bot.cfg ~= nil) .. ")")
+    return
+  end
+  -- match on the normalised name (tags + trailing '.' removed) against normalised keys, so a
+  -- live 'A cave troll {angry} [scratched].' still matches a stored 'A cave troll' / 'A cave troll.'
+  local clean = mob_norm(name)
+  local entry = bot.cfg.mobs and (bot.cfg.mobs[name] or bot.cfg.mobs[clean])
   if not entry and bot.cfg.mobs then
-    -- live lines often carry tags: 'A cave troll {angry} [scratched].'
     for k, v in pairs(bot.cfg.mobs) do
-      if name:sub(1, #k) == k then entry = v break end
+      local ck = mob_norm(k)
+      if ck ~= "" and (clean == ck or clean:sub(1, #ck) == ck) then entry = v break end
     end
   end
   local kill
@@ -267,11 +290,16 @@ function bot_on_mob(name)
   elseif bot.cfg.default_mob then
     kill = bot.cfg.default_mob
   end
+  dbg("=M= '" .. name .. "' -> matched=" .. tostring(entry ~= nil)
+    .. " kill=" .. tostring(kill) .. (kill and "" or "  (NO MATCH, no default_mob)"))
   if kill then bot.mob_pending = kill end
 end
 
 function bot_on_prompt()
   if not bot.active then return end
+  dbg("prompt: mob_pending=" .. tostring(bot.mob_pending) .. " armed=" .. tostring(bot.armed)
+    .. " paused_on_mob=" .. tostring(bot.paused_on_mob) .. " user_paused=" .. tostring(bot.user_paused)
+    .. " returning=" .. tostring(bot.return_path ~= nil))
   if bot.user_paused then return end
   if bot.return_path then bot_advance_return() return end
   if bot.mob_pending then

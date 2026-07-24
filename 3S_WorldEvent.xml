@@ -1,0 +1,315 @@
+<?xml version="1.0" encoding="iso-8859-1"?>
+<!DOCTYPE muclient>
+<muclient>
+<plugin
+   name="ThreeS_WorldEvent"
+   author="Joakim"
+   id="c3d4e5f60718293a4b5c6d7e"
+   language="Lua"
+   purpose="3Scapes world-event window + alert for [WORLD EVENT NOTICE]"
+   date_written="2026-07-20"
+   requires="4.73"
+   version="1.1"
+   save_state="y"
+>
+<description><![CDATA[
+Watches for [WORLD EVENT NOTICE] announcements and keeps them in a small window so
+you can see the current event at a glance, plus a list of recent ones. Also fires a
+coloured note and an optional bell when a new event lands.
+
+The flavour text under the header varies in length, so the plugin captures whatever
+lines appear and closes the event on the "Realm:" line, which always ends the notice.
+
+Commands
+  weventwin                  show / hide the window
+  wevent                     show status and the last event
+  wevent on | off            alert note on/off (window still tracks events)
+  wevent sound on | off      bell on/off
+  wevent filter all          alert on every event (default)
+  wevent filter hard,extreme only alert on these difficulties (comma list)
+  wevent last                reprint the last event
+  wevent clear               clear the recent list
+  wevent test                fire a sample event
+]]>
+</description>
+</plugin>
+
+<triggers>
+  <!-- header: starts a capture -->
+  <trigger enabled="y" regexp="y" sequence="20" keep_evaluating="y" omit_from_output="n"
+    match="\[WORLD EVENT NOTICE\]" script="we_start" />
+  <!-- body catch-all, only enabled while capturing an event -->
+  <trigger group="wevent" enabled="n" regexp="y" sequence="10" keep_evaluating="y" omit_from_output="n"
+    match="^(.*)$" script="we_line" />
+</triggers>
+
+<aliases>
+  <alias match="^weventwin$"             enabled="y" regexp="y" send_to="12" sequence="100"><send>we_toggle_window()</send></alias>
+  <alias match="^wevent$"                enabled="y" regexp="y" send_to="12" sequence="100"><send>we_status()</send></alias>
+  <alias match="^wevent on$"             enabled="y" regexp="y" send_to="12" sequence="100"><send>we_set("we_on", true)</send></alias>
+  <alias match="^wevent off$"            enabled="y" regexp="y" send_to="12" sequence="100"><send>we_set("we_on", false)</send></alias>
+  <alias match="^wevent sound on$"       enabled="y" regexp="y" send_to="12" sequence="100"><send>we_set("we_sound", true)</send></alias>
+  <alias match="^wevent sound off$"      enabled="y" regexp="y" send_to="12" sequence="100"><send>we_set("we_sound", false)</send></alias>
+  <alias match="^wevent filter (.+)$"    enabled="y" regexp="y" send_to="12" sequence="100"><send>we_set_filter("%1")</send></alias>
+  <alias match="^wevent last$"           enabled="y" regexp="y" send_to="12" sequence="100"><send>we_show_last()</send></alias>
+  <alias match="^wevent clear$"          enabled="y" regexp="y" send_to="12" sequence="100"><send>we_clear()</send></alias>
+  <alias match="^wevent test$"           enabled="y" regexp="y" send_to="12" sequence="100"><send>we_test()</send></alias>
+</aliases>
+
+<script>
+<![CDATA[
+require "movewindow"
+
+local enabled = (GetVariable("we_on")    ~= "0")
+local sound   = (GetVariable("we_sound") ~= "0")
+local filter  = GetVariable("we_filter") or "all"       -- "all" or a comma list of difficulties
+local visible = (GetVariable("we_visible") == "1")      -- window hidden until you ask for it
+
+-- difficulty -> note colour (#RRGGBB) and window colour (BGR)
+local DIFFCOL = {
+  trivial = "#80D080", easy = "#60E060", normal = "#60C0FF", medium = "#FFD040",
+  hard = "#FF8040", extreme = "#FF4040", legendary = "#E080E0", mythic = "#E080E0",
+}
+local DIFFWIN = {
+  trivial = 0x80D080, easy = 0x60E060, normal = 0xFFC060, medium = 0x40D0FF,
+  hard = 0x4080FF, extreme = 0x4040FF, legendary = 0xE080E0, mythic = 0xE080E0,
+}
+
+local cap  = nil    -- capture in progress: { body = {}, diff = "", realm = "" }
+local last = nil    -- last completed event
+local recent = {}   -- recent events, newest first
+
+-- ---------------- window ----------------
+local WIN = "wevent_" .. GetPluginID()
+local WW  = 470
+local C   = { bg = 0x101418, border = 0x604020, bar = 0x402818, title = 0x40C0FF,
+              text = 0xE0E0E0, dim = 0x808890, label = 0xC0C0C0 }
+local win_info
+
+local function trim(s) return (tostring(s or ""):gsub("^%s+", ""):gsub("%s+$", "")) end
+
+-- wrap a long flavour line to n characters on word boundaries
+local function wrap(s, n)
+  local out, cur = {}, ""
+  for word in tostring(s or ""):gmatch("%S+") do
+    if cur == "" then cur = word
+    elseif #cur + 1 + #word <= n then cur = cur .. " " .. word
+    else out[#out + 1] = cur; cur = word end
+  end
+  if cur ~= "" then out[#out + 1] = cur end
+  return out
+end
+
+function we_draw()
+  if not visible then return end
+  if not win_info then win_info = movewindow.install(WIN, 7, 0) end
+
+  -- pass 1: make the window exist at a provisional size so the fonts are loaded and we can
+  -- measure them. The old code assumed 74 characters fit, which overflowed the right border.
+  WindowCreate(WIN, win_info.window_left, win_info.window_top, WW, 40,
+               win_info.window_mode, win_info.window_flags, C.bg)
+  WindowFont(WIN, "f",  "Lucida Console", 9, false, false, false, false)
+  WindowFont(WIN, "fb", "Lucida Console", 9, true,  false, false, false)
+
+  -- Lucida Console is monospaced, so one character measures them all
+  local cw = WindowTextWidth(WIN, "f", "M")
+  if cw < 1 then cw = 7 end
+  local wrapn = math.max(20, math.floor((WW - 20) / cw))
+
+  -- lay the current event out so we can size the window to it
+  local lines = {}
+  if last then
+    for _, b in ipairs(last.body) do
+      for _, w in ipairs(wrap(b, wrapn)) do lines[#lines + 1] = w end
+    end
+  end
+  local nrec = math.min(#recent, 6)
+  local H = 22 + math.max(1, #lines) * 13 + 4 + 15 + 13
+  if nrec > 0 then H = H + 8 + 13 + nrec * 12 end
+  H = H + 8
+
+  -- pass 2: real size (WindowCreate clears the canvas, so all drawing happens after this)
+  WindowCreate(WIN, win_info.window_left, win_info.window_top, WW, H,
+               win_info.window_mode, win_info.window_flags, C.bg)
+  WindowFont(WIN, "f",  "Lucida Console", 9, false, false, false, false)
+  WindowFont(WIN, "fb", "Lucida Console", 9, true,  false, false, false)
+  WindowRectOp(WIN, 1, 0, 0, WW, H, C.border)
+  WindowRectOp(WIN, 2, 1, 1, WW - 1, 17, C.bar)
+  WindowText(WIN, "fb", "World Event", 8, 3, 0, 0, C.title)
+  -- hide button
+  WindowRectOp(WIN, 2, WW - 18, 2, WW - 3, 15, C.bar)
+  WindowRectOp(WIN, 1, WW - 18, 2, WW - 3, 15, 0x707070)
+  WindowText(WIN, "fb", "x", WW - 14, 3, 0, 0, 0xE0C8A0)
+  WindowAddHotspot(WIN, "we_hide", WW - 18, 2, WW - 3, 15, "", "", "we_click", "", "",
+    "Hide (weventwin)", 1, 0)
+  movewindow.add_drag_handler(WIN, 0, 0, WW - 20, 17, miniwin.cursor_hand)
+
+  local y = 22
+  if not last then
+    WindowText(WIN, "f", "No world event seen yet.", 10, y, 0, 0, C.dim)
+    y = y + 13
+  else
+    local dcol = DIFFWIN[trim(last.diff):lower()] or C.text
+    for _, l in ipairs(lines) do
+      WindowText(WIN, "f", l, 10, y, 0, 0, C.text); y = y + 13
+    end
+    y = y + 4
+    WindowText(WIN, "fb", "Difficulty:", 10, y, 0, 0, C.label)
+    WindowText(WIN, "fb", last.diff ~= "" and last.diff or "?", 92, y, 0, 0, dcol)
+    WindowText(WIN, "fb", "Realm:", 210, y, 0, 0, C.label)
+    WindowText(WIN, "fb", last.realm ~= "" and last.realm or "?", 262, y, 0, 0, 0x40E0E0)
+    y = y + 15
+    WindowText(WIN, "f", "seen " .. (last.at or "?"), 10, y, 0, 0, C.dim)
+    y = y + 13
+  end
+
+  if nrec > 0 then
+    y = y + 8
+    WindowText(WIN, "fb", "-- recent --", 10, y, 0, 0, C.dim); y = y + 13
+    for i = 1, nrec do
+      local e = recent[i]
+      local dcol = DIFFWIN[trim(e.diff):lower()] or C.text
+      WindowText(WIN, "f", e.at or "?", 10, y, 0, 0, C.dim)
+      WindowText(WIN, "f", (e.diff ~= "" and e.diff or "?"), 62, y, 0, 0, dcol)
+      WindowText(WIN, "f", (e.realm ~= "" and e.realm or "?"), 140, y, 0, 0, 0x40E0E0)
+      y = y + 12
+    end
+  end
+
+  WindowShow(WIN, true)
+end
+
+function we_click(flags, id)
+  if id == "we_hide" then
+    visible = false; SetVariable("we_visible", "0"); WindowShow(WIN, false)
+  end
+end
+
+function we_toggle_window()
+  visible = not visible
+  SetVariable("we_visible", visible and "1" or "0")
+  if visible then we_draw() else WindowShow(WIN, false) end
+end
+
+-- ---------------- alert ----------------
+-- play the Windows "ding" only if the file exists (a missing path pops an error box)
+local function ding()
+  local p = "C:\\Windows\\Media\\ding.wav"
+  local f = io.open(p, "rb")
+  if f then f:close(); Sound(p) end
+end
+
+local function passes(diff)
+  if filter == "" or filter:lower() == "all" then return true end
+  local d = trim(diff):lower()
+  for w in filter:lower():gmatch("[^,]+") do
+    if trim(w) == d then return true end
+  end
+  return false
+end
+
+local function note_event(ev, quiet)
+  local col = DIFFCOL[trim(ev.diff):lower()] or "orange"
+  ColourNote(col, "", string.format("  \187 [World Event %s] %s",
+    ev.at or os.date("%H:%M"), ev.body[1] or "(no description)"))
+  for i = 2, #ev.body do ColourNote("silver", "", "      " .. ev.body[i]) end
+  ColourNote(col, "", string.format("      Difficulty: %s     Realm: %s",
+    ev.diff ~= "" and ev.diff or "?", ev.realm ~= "" and ev.realm or "?"))
+  if sound and not quiet then ding() end
+end
+
+-- ---------------- capture ----------------
+function we_start()
+  cap = { body = {}, diff = "", realm = "" }
+  EnableTriggerGroup("wevent", true)
+  DoAfterSpecial(15, "we_timeout()", 12)   -- safety: never leave the catch-all enabled
+end
+
+-- called for every line while a capture is running
+function we_line(name, line, wc)
+  if not cap then return end
+  local s = trim((wc and wc[1]) or line)
+  if s == "" then return end
+  if s:find("WORLD EVENT NOTICE", 1, true) then return end   -- the header itself
+  local d = s:match("^Difficulty:%s*(.+)$")
+  if d then cap.diff = trim(d); return end
+  local r = s:match("^Realm:%s*(.+)$")
+  if r then cap.realm = trim(r); we_finish(); return end
+  if #cap.body < 5 then cap.body[#cap.body + 1] = s end      -- flavour lines
+end
+
+function we_finish()
+  EnableTriggerGroup("wevent", false)
+  local ev = cap; cap = nil
+  if not ev then return end
+  ev.at = os.date("%H:%M")
+  last = ev
+  table.insert(recent, 1, ev)
+  while #recent > 10 do table.remove(recent) end
+  we_draw()
+  if enabled and passes(ev.diff) then note_event(ev, false) end
+end
+
+function we_timeout()
+  -- Realm line never arrived (unexpected format): drop the capture, keep triggers clean
+  if cap then cap = nil end
+  EnableTriggerGroup("wevent", false)
+end
+
+-- ---------------- commands ----------------
+function we_set(key, on)
+  SetVariable(key, on and "1" or "0")
+  if key == "we_on" then enabled = on else sound = on end
+  we_status()
+end
+
+function we_set_filter(s)
+  s = trim(s)
+  filter = (s == "" and "all" or s)
+  SetVariable("we_filter", filter)
+  we_status()
+end
+
+function we_show_last()
+  if not last then ColourNote("orange", "", "[World Event] nothing seen yet.") return end
+  note_event(last, true)
+end
+
+function we_clear()
+  recent = {}
+  ColourNote("orange", "", "[World Event] recent list cleared.")
+  we_draw()
+end
+
+function we_test()
+  we_start()
+  we_line(nil, "A shimmering elven gateway reveals forgotten ruins of the ancient fey!")
+  we_line(nil, "Arcane wards pulse with renewed power as nature reclaims civilization.")
+  we_line(nil, "The echoes of elven magic still resonate through crystalline halls.")
+  we_line(nil, "Difficulty: Hard")
+  we_line(nil, "Realm: Fantasy")
+end
+
+function we_status()
+  ColourNote("orange", "", string.format(
+    "[World Event] note %s   bell %s   filter: %s   window %s   (weventwin, wevent on|off, sound, filter, last, clear, test)",
+    enabled and "ON" or "OFF", sound and "ON" or "OFF", filter, visible and "shown" or "hidden"))
+  if last then
+    ColourNote("silver", "", "   last: " .. (last.body[1] or "?") ..
+      "  [" .. (last.diff ~= "" and last.diff or "?") .. " / " .. (last.realm ~= "" and last.realm or "?") .. "]")
+  end
+end
+
+function OnPluginSaveState()
+  if win_info then movewindow.save_state(WIN) end
+end
+
+function OnPluginInstall()
+  if visible then we_draw() end
+  ColourNote("orange", "", "[World Event] loaded - note " .. (enabled and "ON" or "OFF") ..
+    ", bell " .. (sound and "ON" or "OFF") .. ", filter " .. filter ..
+    ".  'weventwin' for the window, 'wevent' for options.")
+end
+]]>
+</script>
+</muclient>

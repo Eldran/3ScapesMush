@@ -16,7 +16,8 @@ can be paused/stopped at any time.
 | `3S_VikingStatus.xml` | Viking Status | Tabbed graphical status window for your settlement — Stats, City, People, Settlers, Goods, Holds, Sea, Map, Mission, Feeds. Clickable travel, mission/errand actions, patrol commit, and more. |
 | `3S_Stepper.xml` | Area bot | Walks pre‑recorded area routes and kills the area's mobs. Record new routes from the window, loop runs, rewind to the start, pause/resume. Hosts the shared **Bots** window (Area / Chaos / Deadman tabs). |
 | `3S_ChaosSea.xml` | Chaos Sea | Explores the Chaos Sea, mapping rooms on a 3D grid and fighting as it goes. Pauses when it finds the cask; one‑click "New Sea" with a 60‑minute cooldown timer. |
-| `3S_Mapper.xml` | ThreeS_Mapper | Maps wherever you walk (one map per named area) in a draggable window. Click a room to walk there; right‑click to resync "I am here". Auto‑suspends while a bot is driving. |
+| `3S_Mapper.xml` | ThreeS_Mapper | Maps wherever you walk (one map per named area, plus linked hub‑and‑spoke areas via `mm enter`) in a draggable window. Click a room to walk there; right‑click to resync. Export/import a shared `3s_maps.lua`. Auto‑suspends while a bot is driving. |
+| `3S_Loot.xml` | ThreeS_Loot | Runs a profile of commands after every killing blow (loot, coins, sacrifice, …), botting or not. Switchable profiles, or off. The bots no longer loot themselves. |
 | `3S_Chat.xml` | ThreeS_Chat | Captures all chat channels and tells into a timestamped, colour‑coded window with scrollback, and logs them to `3s_chat.log`. |
 
 Supporting files:

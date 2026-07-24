@@ -30,7 +30,6 @@ Commands:
   cs win          show/hide map window
   cs kill <name>  what to kill when a mob shows up (default: mutant)
   cs exclude <mob long name>   never attack this mob
-  cs vacuum on|off             loot rooms (default on)
   cs debug_all    dump the room grid as text
 ]]>
 </description>
@@ -93,7 +92,6 @@ local pending_mob = nil        -- mob seen this room; attack decided at the prom
 local idle_fight_prompts = 0   -- self-heal counter when combat fizzles out
 local armed = false         -- a room was parsed; ok to auto-step on next prompt
 local plan = nil            -- walking plan: one confirmed move at a time
-local vacuum = (GetVariable("vacuum") ~= "0")
 local killname = GetVariable("killname") or "mutant"
 local goal = GetVariable("goal") or "cask portal"
 local goals = {}
@@ -441,11 +439,6 @@ function cs_on_prompt()
       return
     end
   end
-  if vacuum and not cs_flags.player and not fighting then
-    if cs_flags.item then Send("!get all") end
-    if cs_flags.gold then Send("!get coins") end
-    cs_flags.item = false; cs_flags.gold = false
-  end
   if fighting or in_combat() then
     if in_combat() then
       fighting = true
@@ -788,7 +781,6 @@ function cs_button(flags, id)
   elseif id == "b_auto"  then cs_interface(auto and "auto off" or "auto on")
   elseif id == "b_leave" then cs_leave()
   elseif id == "b_reset" then cs_interface("reset")
-  elseif id == "b_loot"  then cs_interface(vacuum and "vacuum off" or "vacuum on")
   elseif id == "b_dminus" then cs_interface("delay " .. (kill_delay - 0.5))
   elseif id == "b_dplus"  then cs_interface("delay " .. (kill_delay + 0.5))
   elseif id == "b_hide"  then cs_interface("win")
@@ -864,7 +856,6 @@ function cs_draw()
   draw_btn("b_leave", 238, 69, 290, 89, "Leave", false, "Walk back to the start room")
   -- buttons row 2: options
   draw_btn("b_reset", 10, 93, 76, 113, "Reset", false, "Wipe the map - current room becomes start")
-  draw_btn("b_loot", 80, 93, 146, 113, "Loot", vacuum, "Pick up items and coins on/off")
   draw_btn("b_dminus", 150, 93, 172, 113, "-", false, "Shorter pause after kills")
   WindowText(WIN, "f", string.format("%.1fs", kill_delay), 178, 96, 0, 0, C.text)
   draw_btn("b_dplus", 212, 93, 234, 113, "+", false, "Longer pause after kills")
@@ -953,7 +944,7 @@ Chaos sea stepper:
   cs leave              walk back to 0 0 0
   cs reset              wipe map        cs win   show/hide map
   cs set/find <x> <y> <z>
-  cs kill <name>        cs exclude <mob long name>     cs vacuum on|off
+  cs kill <name>        cs exclude <mob long name>
   cs goal <word>        stop + open it when seen (default: cask)
   cs delay <secs>       pause after killing blows (default 2.5s)
   cs rest <seid> [secs] rest when Seid drops below <seid> (0 = off)
@@ -998,10 +989,6 @@ Chaos sea stepper:
         end
       end
     end
-  elseif args == "vacuum on" or args == "vacuum off" then
-    vacuum = (args == "vacuum on")
-    SetVariable("vacuum", vacuum and "1" or "0")
-    note("looting: " .. (vacuum and "on" or "off"))
   else
     local parts = {}
     for w in args:gmatch("%S+") do parts[#parts + 1] = w end

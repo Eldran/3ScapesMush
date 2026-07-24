@@ -40,8 +40,27 @@ Commands:
   </alias>
   <alias match="^vtick (on|off)$" enabled="y" regexp="y" send_to="12" sequence="100"><send>vik_tick("%1")</send></alias>
   <alias match="^vikdump$" enabled="y" regexp="y" send_to="12" sequence="100"><send>vik_dump()</send></alias>
+  <alias match="^vnav (on|off)$" enabled="y" regexp="y" send_to="12" sequence="100"><send>sea_nav_set("%1")</send></alias>
+  <alias match="^vnav resolve (.+)$" enabled="y" regexp="y" send_to="12" sequence="100"><send>sea_nav_resolve_set("%1")</send></alias>
+  <alias match="^vnav reset$" enabled="y" regexp="y" send_to="12" sequence="100"><send>sea_nav_reset()</send></alias>
   <alias match="^vikloc (\d+) (\d+)(?:\s+(.*))?$" enabled="y" regexp="y" send_to="12" sequence="100"><send>vik_setloc(%1, %2, "%3")</send></alias>
+  <alias match="^vplan clear$" enabled="y" regexp="y" send_to="12" sequence="100"><send>vik_plan_reset()</send></alias>
 </aliases>
+
+<triggers>
+  <!-- Modrsokn combat ability used: starts the 3-minute cooldown timer on the Stats tab -->
+  <trigger enabled="y" regexp="y" keep_evaluating="y" omit_from_output="n" sequence="100"
+    match="You close your eyes and turn the rage inward" send_to="12">
+    <send>mordsokn_used()</send>
+  </trigger>
+  <!-- 'vplan' output: capture the framed grid to resync all placed buildings on the Plan tab -->
+  <trigger enabled="y" regexp="y" keep_evaluating="y" omit_from_output="n" sequence="100"
+    match="^-~\*  City Plan -- " send_to="12"><send>cp_vplan_start()</send></trigger>
+  <trigger enabled="y" regexp="y" keep_evaluating="y" omit_from_output="n" sequence="100"
+    match="^-~\*  ([A-L]) (.*\S)\s+\*~-" send_to="12"><send>cp_vplan_row("%1", "%2")</send></trigger>
+  <trigger enabled="y" regexp="y" keep_evaluating="y" omit_from_output="n" sequence="100"
+    match="^-~\*  Placed: (\d+) of" send_to="12"><send>cp_vplan_end()</send></trigger>
+</triggers>
 
 <script>
 <![CDATA[
@@ -56,7 +75,12 @@ local visible = (GetVariable("visible") ~= "0")
 local tab = GetVariable("tab") or "Stats"
 local prev_rndz = nil                                  -- last seen RNDZ (round counter)
 local last_fight = tonumber(GetVariable("last_fight")) or 0  -- rounds the previous combat lasted
-local TABS = { "Stats", "City", "Builds", "Production", "People", "Settlers", "Holds", "Sea", "Voyage", "Map", "Mission", "Feeds" }
+-- Modrsokn: a combat ability with a 3-minute cooldown. The MIP feed doesn't expose it, so we
+-- start a local timer from the "turn the rage inward" line and count down on the Stats tab.
+local MORDSOKN_CD = 180
+local mordsokn_at = tonumber(GetVariable("mordsokn_at")) or 0
+local mordsokn_ticking = false
+local TABS = { "Stats", "City", "Builds", "Production", "People", "Settlers", "Holds", "Sea", "Voyage", "Map", "Plan", "Mission", "Feeds" }
 
 local C = {
   bg = 0x201510, panel = 0x2A1C14, border = 0x604020,
@@ -167,6 +191,45 @@ local function getvars()
   }, vmip
 end
 
+-- ============ auto sea-navigation (tour discovered chart features) ============
+-- Diverts the current voyage toward newly-revealed islands / wrecks / objectives, nearest first.
+local sea_nav = {
+  on      = (GetVariable("seanav") == "1"),   -- default OFF (safety)
+  target  = nil,                              -- { coord, r, c } we've queued a course to
+  visited = {},                               -- coords already toured this voyage
+  voyage  = "",                               -- voyage id, to reset the tour on a new voyage
+  resolve = GetVariable("seanav_resolve") or "hold,evade?hull<40,hunt,ration,salvage,resupply?supplies<50,plunder",  -- keyword[?cond] list
+  last_cmd_at = 0,
+}
+local SEANAV_TARGETS = { I = true, W = true, X = true }   -- island / wreck / objective
+-- scan the voyage chart: returns the target features {coord,r,c,sym} and the ship's cell {r,c}
+local function sea_chart_scan(vmip)
+  local h = num(split(vmip.VCHH or "", "|")[2] or "")
+  if h <= 0 then return nil, nil end
+  local feats, ship = {}, nil
+  for r = 0, h - 1 do
+    local rowstr = vmip[string.format("VCR%02d", r)]
+    if rowstr then
+      for c = 1, #rowstr do
+        local s = rowstr:sub(c, c)
+        if s == "S" then ship = { r = r, c = c }
+        elseif SEANAV_TARGETS[s] then
+          feats[#feats + 1] = { coord = string.char(65 + r) .. string.format("%02d", c), r = r, c = c, sym = s }
+        end
+      end
+    end
+  end
+  return feats, ship
+end
+-- destination of the currently queued voyage course (last waypoint of VQPATH), as a coord
+local function vqpath_dest(s)
+  local nums = {}
+  for n in (s or ""):gmatch("%d+") do nums[#nums + 1] = tonumber(n) end
+  if #nums < 2 then return nil end
+  local col, row = nums[#nums - 1], nums[#nums]   -- VQPATH pairs are col,row; last = destination
+  return string.char(65 + row) .. string.format("%02d", col)
+end
+
 -- number to commit on patrol: a user override if set, else the last patrol's count
 local function patrol_number(vmip)
   local override = tonumber(GetVariable("patrol_num"))
@@ -208,7 +271,7 @@ local DEFAULT_LOCNAMES = {
   -- Seer's cell (19|25) now coincides with Borgarfjord above; its type is still set below.
   ["50|27"] = "Jarl",
   ["51|16"] = "Berserker",
-  ["4|28"]  = "Blot",
+  ["3|28"]  = "Blot",   -- grove, 3s + 16w of Borgarfjord (19|25)
 }
 
 -- trade-hold index -> city name (what you trade against in-game). VREP gives
@@ -222,14 +285,169 @@ local HOLDCITY = {
 
 -- type labels for special places that are not travel towns
 local DEFAULT_LOCTYPE = {
-  ["50|27"] = "Mentor", ["19|25"] = "Seer", ["51|16"] = "Mentor", ["4|28"] = "Blot",
+  ["50|27"] = "Mentor", ["19|25"] = "Seer", ["51|16"] = "Mentor", ["3|28"] = "Blot",
 }
+
+-- ====================== City Plan (CP* feed) ======================
+-- role -> colour (BGR), matching the in-game "coloured by role" legend
+local PLAN_ROLE = {
+  prod  = 0x40E040,  -- producers  (green)
+  ind   = 0x3040E0,  -- industry   (red)
+  grim  = 0x2828A0,  -- grim       (maroon)
+  trade = 0xE0D040,  -- trade      (cyan)
+  cult  = 0xE060E0,  -- culture    (magenta)
+  home  = 0xE0E0E0,  -- homes      (white)
+  throne= 0x40D0FF,  -- throne     (gold)
+}
+-- building shortcut letter -> { name, role }.  Letter is what 'vplan place <L> <cell>' expects.
+local PLAN_BLD = {
+  { "F", "Farm",          "prod"  }, { "M", "Mine",          "prod"  },
+  { "K", "Smithy",        "ind"   }, { "E", "Beacon",        "grim"  },
+  { "P", "Apiary",        "prod"  }, { "I", "Fishery",       "prod"  },
+  { "S", "Smelter",       "ind"   }, { "N", "Tannery",       "ind"   },
+  { "R", "Armoury",       "ind"   }, { "g", "Garrison",      "grim"  },
+  { "V", "Weaponry",      "ind"   }, { "d", "Mead hall",     "throne"},
+  { "B", "Bakehouse",     "ind"   }, { "W", "Warehouse",     "trade" },
+  { "h", "Longhouse",     "home"  }, { "Z", "Goldsmith",     "ind"   },
+  { "k", "Skald hall",    "cult"  }, { "y", "Thrall pen",    "grim"  },
+  { "L", "Lumber yard",   "prod"  }, { "C", "Mead cellar",   "ind"   },
+  { "O", "Courier post",  "trade" }, { "X", "Shadow house",  "grim"  },
+  { "T", "Trading post",  "trade" }, { "D", "Training yard", "grim"  },
+  { "u", "Muster ground", "grim"  }, { "H", "Settler plots", "home"  },
+  { "G", "Salting house", "ind"   }, { "U", "Furriers lodge","ind"   },
+  { "o", "Workyards",     "ind"   }, { "l", "Law stone",     "cult"  },
+  { string.char(254), "Poorhouse", "cult" }, { "b", "Watch posts", "grim" },
+  { "v", "Foundry row",   "ind"   }, { "r", "Granary mill",  "ind"   },
+  { "e", "Weaving hall",  "ind"   }, { "w", "Quarry works",  "prod"  },
+  { "i", "Midwife house", "cult"  }, { "a", "Market stalls", "trade" },
+  { "n", "Fishing wharf", "cult"  }, { "t", "Timberward yd", "trade" },
+  { "s", "Shipwrights yd","cult"  },
+}
+-- lookup: letter -> {name, role, idx}   (idx = position in the 3s_cityicons.png sprite sheet)
+local PLAN_BY_L = {}
+for i, b in ipairs(PLAN_BLD) do PLAN_BY_L[b[1]] = { name = b[2], role = b[3], idx = i - 1 } end
+local PLAN_ICON_COLS = 8   -- sprite sheet columns; cell = 22px
+local cp_img = nil         -- nil = not tried, true/false = load result
+local function cp_load_image()
+  if cp_img == nil then
+    cp_img = (WindowLoadImage(WIN, "cityicons", GetPluginInfo(GetPluginID(), 20) .. "3s_cityicons.png") == 0)
+  end
+  return cp_img
+end
+-- terrain chars (anything else in an inner cell is a placed building letter)
+-- { label, glyph/text colour, tile fill colour } -- fill is used by the "tiles" style
+local PLAN_TERRAIN = {
+  ["."] = { "plain", 0x8A8A8A, 0x484848 }, ["f"] = { "woods", 0x70E070, 0x246E24 },
+  ["H"] = { "hill",  0x98C0DC, 0x50708C }, ["w"] = { "river", 0xF0B860, 0x9A5C1C },
+  ["c"] = { "coast", 0xD8D868, 0x6A6A20 }, ["M"] = { "wall",  0xB0B0B0, 0x585858 },
+  ["W"] = { "wall",  0xA0A0A0, 0x4E4E4E }, ["G"] = { "gate",  0x60E0FF, 0x466C88 },
+  ["B"] = { "gate",  0x60E0FF, 0x466C88 },
+}
+local plan_sel = nil   -- currently selected building letter for click-to-place
+local plan_style = GetVariable("plan_style") or "text"   -- "text" | "tiles"
+
+-- The MIP feed only publishes the MOST-RECENTLY placed building (CPB) plus a count (CPLAN[3]);
+-- it never sends the full list. So we remember placements ourselves as each one broadcasts, and
+-- persist them. cp_placed["col,row"] = { col,row,w,h,letter,name } (keyed by the anchor cell).
+local cp_placed = {}
+local function cp_load()
+  cp_placed = {}
+  for e in (GetVariable("cp_placed") or ""):gmatch("[^\n]+") do
+    local col, row, w, h, letter, name = e:match("^(%d+)|(%d+)|(%d+)|(%d+)|([^|]*)|(.*)$")
+    if col then
+      cp_placed[col .. "," .. row] = { col = tonumber(col), row = tonumber(row),
+        w = tonumber(w), h = tonumber(h), letter = letter, name = name }
+    end
+  end
+end
+local function cp_save()
+  local out = {}
+  for _, b in pairs(cp_placed) do
+    out[#out + 1] = table.concat({ b.col, b.row, b.w, b.h, b.letter, b.name }, "|")
+  end
+  SetVariable("cp_placed", table.concat(out, "\n"))
+end
+local function cp_count()
+  local n = 0; for _ in pairs(cp_placed) do n = n + 1 end; return n
+end
+-- record the building currently in CPB (idempotent: adding the same one twice is harmless)
+local function cp_accumulate(cpb)
+  local changed = false
+  for entry in (cpb or ""):gmatch("[^;]+") do
+    local _, col, row, w, h, _, letter, name =
+      entry:match("^([^|]*)|(%d+)|(%d+)|(%d+)|(%d+)|([^|]*)|([^|]*)|(.*)$")
+    if col and not cp_placed[col .. "," .. row] then
+      cp_placed[col .. "," .. row] = { col = tonumber(col), row = tonumber(row),
+        w = tonumber(w), h = tonumber(h), letter = letter, name = name }
+      changed = true
+    end
+  end
+  if changed then cp_save() end
+end
+cp_load()
+
+-- Full resync from the in-game 'vplan' output (the feed only sends the latest placement). The
+-- grid is framed; each lettered row has 12 inner cells between two '#' border columns. Inside the
+-- buildable grid the only terrain glyphs are . f ^, so any letter that maps to a building IS one.
+local cp_scan, cp_capturing = {}, false
+function cp_vplan_start() cp_capturing = true; cp_scan = {} end
+function cp_vplan_row(letter, rowstr)
+  if not cp_capturing then return end
+  local toks = {}
+  for t in rowstr:gmatch("%S+") do toks[#toks + 1] = t end
+  local h1, h2
+  for i = 1, #toks do
+    if toks[i] == "#" then if not h1 then h1 = i elseif not h2 then h2 = i end end
+  end
+  if not (h1 and h2) then return end
+  local row = string.byte(letter) - 65
+  for c = 1, 12 do
+    local ch = toks[h1 + c]
+    if ch and PLAN_BY_L[ch] then
+      cp_scan[(c - 1) .. "," .. row] = { col = c - 1, row = row, w = 1, h = 1,
+        letter = ch, name = PLAN_BY_L[ch].name }
+    end
+  end
+end
+function cp_vplan_end()
+  if not cp_capturing then return end
+  cp_capturing = false
+  -- group adjacent same-letter cells into one building (a 2x2 warehouse shows as W in four cells
+  -- but is ONE building). Without this the tracked count exceeds the game's and the desync guard
+  -- in OnPluginBroadcast wrongly wipes the list on the next feed tick.
+  local seen, built = {}, {}
+  for k, v in pairs(cp_scan) do
+    if not seen[k] then
+      local c0, r0 = k:match("^(%d+),(%d+)$"); c0, r0 = tonumber(c0), tonumber(r0)
+      local minc, maxc, minr, maxr = c0, c0, r0, r0
+      local stack = { { c0, r0 } }; seen[k] = true
+      while #stack > 0 do
+        local cell = table.remove(stack); local cc, rr = cell[1], cell[2]
+        if cc < minc then minc = cc end; if cc > maxc then maxc = cc end
+        if rr < minr then minr = rr end; if rr > maxr then maxr = rr end
+        for _, d in ipairs({ { 1, 0 }, { -1, 0 }, { 0, 1 }, { 0, -1 } }) do
+          local nk = (cc + d[1]) .. "," .. (rr + d[2])
+          if cp_scan[nk] and cp_scan[nk].letter == v.letter and not seen[nk] then
+            seen[nk] = true; stack[#stack + 1] = { cc + d[1], rr + d[2] }
+          end
+        end
+      end
+      built[minc .. "," .. minr] = { col = minc, row = minr,
+        w = maxc - minc + 1, h = maxr - minr + 1, letter = v.letter, name = v.name }
+    end
+  end
+  cp_placed = built
+  cp_save()
+  ColourNote("cyan", "", "[plan] synced " .. cp_count() .. " buildings from vplan")
+  vik_draw()
+end
 
 -- town <-> Midgard base routes (extracted from the old TinTin aliases);
 -- any pair is chained as <From>Mid + Mid<To>
 local ROUTES = {
   BirMid = { "leave", "s", "e", "e", "e", "e", "e", "e", "e", "e", "e", "e", "e", "e", "e", "n", "e", "e", "e", "e", "e", "e", "e", "n", "n", "n", "n", "n", "n", "enter" },
-  BlotMid = { "s", "s", "s", "s", "s", "s", "s", "s", "s", "e", "e", "e", "e", "e", "e", "enter" },
+  -- Blot routes via Borgarfjord: Mid->Bor (leave,s8,w16) then Bor->Blot (s3,w16), no grove entry
+  BlotMid = { "e","e","e","e","e","e","e","e","e","e","e","e","e","e","e","e", "n","n","n", "e","e","e","e","e","e","e","e","e","e","e","e","e","e","e","e", "n","n","n","n","n","n","n","n", "enter" },
   BorMid = { "leave", "e", "e", "e", "e", "e", "e", "e", "e", "e", "e", "e", "e", "e", "e", "e", "e", "n", "n", "n", "n", "n", "n", "n", "n", "enter" },
   EirMid = { "leave", "w", "e", "e", "s", "s", "s", "s", "s", "s", "w", "w", "s", "e", "s", "s", "s", "w", "w", "w", "w", "w", "w", "w", "w", "w", "w", "w", "w", "w", "w", "w", "w", "w", "w", "w", "w", "enter" },
   EriMid = { "leave", "w", "w", "s", "s", "s", "s", "s", "s", "s", "s", "w", "w", "w", "w", "w", "w", "w", "w", "w", "w", "w", "w", "enter" },
@@ -239,7 +457,7 @@ local ROUTES = {
   LerMid = { "leave", "n", "n", "n", "n", "w", "w", "w", "w", "w", "w", "w", "w", "w", "w", "w", "w", "w", "w", "w", "w", "w", "w", "w", "w", "enter" },
   LodMid = { "leave", "s", "s", "s", "s", "s", "s", "s", "s", "s", "s", "s", "s", "s", "e", "e", "e", "e", "e", "e", "e", "e", "e", "e", "e", "e", "e", "e", "e", "e", "e", "e", "n", "n", "n", "n", "n", "enter" },
   MidBir = { "leave", "s", "s", "s", "s", "s", "s", "w", "w", "w", "w", "w", "w", "w", "s", "w", "w", "w", "w", "w", "w", "w", "w", "w", "w", "w", "w", "w", "n", "enter" },
-  MidBlot = { "leave", "w", "w", "w", "w", "w", "w", "n", "n", "n", "n", "n", "n", "n", "grove" },
+  MidBlot = { "leave", "s","s","s","s","s","s","s","s", "w","w","w","w","w","w","w","w","w","w","w","w","w","w","w","w", "s","s","s", "w","w","w","w","w","w","w","w","w","w","w","w","w","w","w","w" },
   MidBor = { "leave", "s", "s", "s", "s", "s", "s", "s", "s", "w", "w", "w", "w", "w", "w", "w", "w", "w", "w", "w", "w", "w", "w", "w", "w", "enter" },
   MidEir = { "leave", "e", "e", "e", "e", "e", "e", "e", "e", "e", "e", "e", "e", "e", "e", "e", "e", "e", "e", "e", "e", "n", "n", "n", "w", "n", "e", "e", "n", "n", "n", "n", "n", "n", "w", "w", "e", "enter" },
   MidEri = { "leave", "e", "e", "e", "e", "e", "e", "e", "e", "e", "e", "e", "e", "n", "n", "n", "n", "n", "n", "n", "n", "e", "e", "enter" },
@@ -284,6 +502,11 @@ local TRAVEL_CODE = {
   ["55|21"] = "Ler", ["25|9"] = "Nid",
 }
 
+-- Special sites that are travelable but NOT lineage towns. Kept out of TRAVEL_CODE so they keep
+-- their own map type/colour (e.g. Blot), but still route via <From>Mid + Mid<To> and are clickable.
+local SPECIAL_TRAVEL = { ["3|28"] = "Blot" }
+local function travel_code(key) return TRAVEL_CODE[key] or SPECIAL_TRAVEL[key] end
+
 -- user-named map locations (vikloc x y name)
 local locnames = {}
 do
@@ -318,7 +541,7 @@ function vik_travel_click(flags, id)
   local x, y = id:match("^trav_(%-?%d+)|(%-?%d+)$")
   if not x then return end
   local destkey = x .. "|" .. y
-  local dest = TRAVEL_CODE[destkey]
+  local dest = travel_code(destkey)
   if not dest then return end
   local destname = locname(tonumber(x), tonumber(y)) or dest
   local rh = false
@@ -344,10 +567,19 @@ function vik_travel_click(flags, id)
         break
       end
     end
+    if not live then                          -- also match travelable special sites (Blot)
+      for k, code in pairs(SPECIAL_TRAVEL) do
+        local tx, ty = k:match("^(%-?%d+)|(%-?%d+)$")
+        if math.abs(px - tx) <= 2 and math.abs(py - ty) <= 2 then
+          live, livekey = code, k
+          break
+        end
+      end
+    end
   end
   local rem, remkey
   local ck = GetVariable("curtown")
-  if ck and TRAVEL_CODE[ck] then rem, remkey = TRAVEL_CODE[ck], ck end
+  if ck and travel_code(ck) then rem, remkey = travel_code(ck), ck end
   -- click-travel knowledge is authoritative: the map feed only updates on
   -- the guild tick and lags far behind actual movement.  Only discard the
   -- remembered town if the feed has clearly shown us somewhere ELSE for a
@@ -460,6 +692,12 @@ local function draw_stats(my, vmip)
   txt(10, "Rounds " .. (vmip.RNDZ or "?")); nl()
   txt(10, "Last fight " .. (last_fight > 0 and tostring(last_fight) or "-")); nl()
   txt(10, string.format("Ledung %s / %s uses", vmip.LDNG or "?", vmip.MLDNG or "?")); nl()
+  local mleft = MORDSOKN_CD - (os.time() - mordsokn_at)
+  if mordsokn_at > 0 and mleft > 0 then
+    txt(10, string.format("Modrsokn %d:%02d", math.floor(mleft / 60), mleft % 60), C.warn); nl()
+  else
+    txt(10, "Modrsokn ready", C.good); nl()
+  end
   nl(6)
   header("-- Patrol --")
   if (vmip.PATROL or "") == "" then
@@ -485,65 +723,76 @@ end
 
 local function draw_settlers(my, vmip)
   header("-- Settlement --")
-  txt(10, string.format("Blot %s   Sproj %s   Sact %s",
-    (vmip.BLOT or "?"):sub(1, 14), vmip.SPROJ or "?", vmip.SACTIONS or "?")); nl()
+  txt(10, string.format("Blot %s   Sproj %s",
+    (vmip.BLOT or "?"):sub(1, 14), (vmip.SPROJ ~= "" and vmip.SPROJ) or "-")); nl()
   nl(4)
-  header("-- Settlers --")
+
+  -- Everything below is driven by the SEVENTS tick report (authoritative plain-text feed).
+  -- The old SETTLERX slot layout changed -- the game moved mood / tax / sentiment out of the
+  -- numeric slots and into the SEVENTS text -- so we parse the report instead of guessing slots.
+  -- SETTLERS is only used as a fallback for pop / water when no tick report has arrived yet.
   local s = split(vmip.SETTLERS or "", "|")
-  local sx = split(vmip.SETTLERX or "", "|")
-  local vals = {}
-  for i = 2, #sx do vals[#vals + 1] = sx[i] end   -- vals[N] = SETTLERX slot N
-  txt(10, string.format("Population %s/%s   Mood %s/100   Tax %s   Water %s",
-    s[1] or "?", vals[3] or "?", s[2] or "?", s[3] or "?", s[4] or "?")); nl()
-  local mood = tonumber(s[2])
-  if mood then
+  local sts, srep = (vmip.SEVENTS or ""):match("^(%d+)|(.*)$")
+  srep = srep or ""
+  local pop            = srep:match("Settlers:%s*(%d+)")               or s[1]
+  local moodname, mood = srep:match("Mood:%s*(%a+)%s*%((%d+)/100%)")
+  local sentiment      = srep:match("Sentiment:%s*([%+%-]?%d+)")
+  local inc, tax, comm = srep:match("Income:%s*%+?(%d+)%s*daler%s*%(tax%s*(%d+)%s*%+%s*community%s*(%d+)%)")
+  local wr, wm         = srep:match("Water reserve:%s*(%d+)/(%d+)")
+  if not wr then wr = s[4] end
+
+  header("-- Settlers --")
+  txt(10, string.format("Population %s   Mood %s %s/100   Sentiment %s",
+    pop or "?", moodname or "?", mood or "?", sentiment or "?")); nl()
+  local moodn = tonumber(mood)
+  if moodn then
     WindowRectOp(WIN, 2, 150, ly + 1, 400, ly + 12, C.panel)
-    local fill = math.floor(248 * math.min(mood, 100) / 100)
-    if fill > 0 then WindowRectOp(WIN, 2, 151, ly + 2, 151 + fill, ly + 11, grad(mood)) end
+    local fill = math.floor(248 * math.min(moodn, 100) / 100)
+    if fill > 0 then WindowRectOp(WIN, 2, 151, ly + 2, 151 + fill, ly + 11, grad(moodn)) end
     WindowRectOp(WIN, 1, 150, ly + 1, 400, ly + 12, C.border)
     nl(16)
   end
-  local tier = tonumber(vals[5]); tier = tier and string.format("T%.2f", tier / 100) or "?"
-  txt(10, string.format("Housing plots %s (avg %s)", vals[4] or "?", tier)); nl()
-  txt(10, string.format("Security %s%%   Dignity %s%%   Sustenance %s%%   Employment %s%%   Sentiment %s",
-    vals[11] or "?", vals[12] or "?", vals[17] or "?", vals[18] or "?", vals[19] or "?")); nl()
-  nl(4)
-  header("-- Settler economy --")
-  local function hm(sec)
-    sec = tonumber(sec)
-    if not sec then return "?" end
-    local h, m = math.floor(sec / 3600), math.floor((sec % 3600) / 60)
-    if h > 0 then return h .. "h " .. m .. "min" else return m .. "min" end
-  end
-  if #vals == 0 then
-    txt(10, "no data", C.dim); nl()
-  else
-    txt(10, string.format("Tax income %s d/tick   Pop tick %s   Supply tick %s",
-      vals[15] or "?", hm(vals[21]), hm(vals[20]))); nl()
-    -- settler upkeep: the game's actual per-tick daler cost (UPKEEP = cat|cat|...|total)
-    local up = split(vmip.UPKEEP or "", "|")
-    local upkeep = tonumber(up[#up])
-    if upkeep then
-      local net = (tonumber(vals[15]) or 0) - upkeep
-      txt(10, string.format("Upkeep %d d/tick   Net %s%d",
-        upkeep, net >= 0 and "+" or "", net),
-        net >= 0 and C.good or C.bad); nl()
-    end
-    -- only the still-unlabelled slots (decoded ones are shown above)
-    local KNOWN = { [3] = true, [4] = true, [5] = true, [11] = true, [12] = true,
-                    [15] = true, [17] = true, [18] = true, [19] = true, [20] = true, [21] = true }
-    local unk = {}
-    for j = 1, #vals do
-      if not KNOWN[j] then unk[#unk + 1] = string.format("%2d:%-4s", j, vals[j]) end
-    end
-    local per = 9
-    for i = 1, #unk, per do
-      local parts = {}
-      for k = i, math.min(i + per - 1, #unk) do parts[#parts + 1] = unk[k] end
-      txt(10, table.concat(parts, " "), C.dim); nl()
-    end
+  if wr then
+    txt(10, string.format("Water reserve %s%s", wr, wm and ("/" .. wm) or ""),
+        (wm and tonumber(wr) * 2 >= tonumber(wm)) and C.text or C.warn); nl()
   end
   nl(4)
+
+  header(sts and ("-- Economy (tick " .. os.date("%H:%M", tonumber(sts)) .. ") --") or "-- Economy --")
+  if inc then
+    txt(10, string.format("Income  +%s d/tick   (tax %s + community %s)", inc, tax, comm), C.good); nl()
+  end
+  -- settler upkeep: the game's actual per-tick daler cost (UPKEEP = cat|cat|...|total)
+  local up = split(vmip.UPKEEP or "", "|")
+  local upkeep = tonumber(up[#up])
+  if upkeep then
+    local net = (tonumber(inc) or 0) - upkeep
+    txt(10, string.format("Upkeep  %d d/tick   Net %s%d",
+      upkeep, net >= 0 and "+" or "", net), net >= 0 and C.good or C.bad); nl()
+  end
+  local nextt = tonumber(vmip.NEXTTICK)
+  if nextt then
+    local h, m = math.floor(nextt / 3600), math.floor((nextt % 3600) / 60)
+    txt(10, "Next tick in " .. (h > 0 and (h .. "h " .. m .. "min") or (m .. "min")), C.dim); nl()
+  end
+  nl(4)
+
+  -- last-tick demand: green when fully met, red when it fell short
+  if srep ~= "" then
+    header("-- Demand (last tick) --")
+    local cx = { Food = 10, Spoils = 150, Mead = 280 }
+    local shown = false
+    for _, k in ipairs({ "Food", "Spoils", "Mead" }) do
+      local got, want = srep:match(k .. ":%s*consumed%s*(%d+)/(%d+)")
+      if got then
+        shown = true
+        txt(cx[k], string.format("%s %s/%s", k, got, want),
+            (tonumber(got) >= tonumber(want)) and C.good or C.bad)
+      end
+    end
+    if shown then nl() else txt(10, "no tick report yet", C.dim); nl() end
+    nl(4)
+  end
   header("-- Civic --")
   local civ = {}
   for entry in (vmip.SCIVICS or ""):gmatch("[^;]+") do
@@ -938,6 +1187,11 @@ end
 
 local function draw_sea(my, vmip)
   local v = split(vmip.VOYAGE or "", "|")
+  txt(10, "Auto-nav: " .. (sea_nav.on and "ON" or "off")
+    .. ((sea_nav.on and sea_nav.target) and ("  ->  " .. sea_nav.target.coord) or "")
+    .. ((sea_nav.on and sea_nav.original) and ("  (resume " .. sea_nav.original .. ")") or "")
+    .. "   resolve: " .. (sea_nav.resolve == "" and "manual" or sea_nav.resolve)
+    .. "   (vnav on|off | vnav resolve <opt>)", sea_nav.on and C.good or C.dim); nl(15)
   if #v < 10 then
     header("-- Sea --")
     txt(10, "No voyage under way.", C.dim); nl()
@@ -959,10 +1213,22 @@ local function draw_sea(my, vmip)
   header(string.format("-- Voyage: %s - %s (%s) --", v[3] or "?", v[4] or "?", v[5] or "?"))
   -- left column: text facts / right column: condition bars
   local top = ly
-  txt(10, string.format("State:    %s", v[1] or "?")); nl()
-  txt(10, string.format("Position: %s,%s", v[6] or "?", v[7] or "?")); nl()
+  -- VOYAGE fields: 6=danger, 7=x, 8=y (0-based chart cell), 17=steps, 18=next_move (seconds)
+  local vpx, vpy = num(v[7]), num(v[8])
+  local pos = string.char(65 + vpy) .. string.format("%02d", vpx + 1)
+  -- next_move only refreshes when the feed does, so count down locally. Re-anchor whenever the
+  -- value changes OR a move happens (steps++), since the server resets next_move at each move --
+  -- otherwise a first read taken mid-interval leaves the countdown reading high.
+  local nm, nsteps = num(v[18]), num(v[17])
+  if nm ~= sea_nav.nm_val or nsteps ~= sea_nav.nm_steps then
+    sea_nav.nm_val, sea_nav.nm_at, sea_nav.nm_steps = nm, os.time(), nsteps
+  end
+  local left = math.max(0, (sea_nav.nm_val or 0) - (os.time() - (sea_nav.nm_at or os.time())))
+  local nxt = (left > 0) and (math.ceil(left / 60) .. "m") or "moving"
+  txt(10, string.format("State:    %-9s Next square: %s", v[1] or "?", nxt)); nl()
+  txt(10, string.format("Position: %-9s Steps: %s", pos, v[17] or "?")); nl()
   txt(10, string.format("Threat:   %s [%s]", v[19] or "-", v[20] or "?")); nl()
-  txt(10, string.format("Pressure: %s   Danger: %s", v[21] or "?", v[8] or "?")); nl()
+  txt(10, string.format("Pressure: %s   Danger: %s", v[21] or "?", v[6] or "?")); nl()
   txt(10, string.format("Captain:  %s", v[25] or "?")); nl()
   txt(10, string.format("Identity: %s", v[26] or "?")); nl()
   txt(10, ("Traits:   " .. (v[27] or "") .. ", " .. (v[28] or "")):sub(1, 40), C.dim); nl()
@@ -1207,7 +1473,7 @@ local function draw_map(my, vmip)
   end
   if #merged > 0 then
     local function rank(e)
-      if TRAVEL_CODE[e.x .. "|" .. e.y] then return 1 end
+      if travel_code(e.x .. "|" .. e.y) then return 1 end
       if e.name then return 2 end
       return 3
     end
@@ -1233,7 +1499,7 @@ local function draw_map(my, vmip)
       local t = (lc.type or "?"):gsub("_.*$", "")
       t = t:sub(1, 1):upper() .. t:sub(2)
       local key2 = lc.x .. "|" .. lc.y
-      local clickable = TRAVEL_CODE[key2] ~= nil
+      local clickable = travel_code(key2) ~= nil
       WindowText(WIN, "f", t, colx, ly, 0, 0, loc_color(lc.type))
       WindowText(WIN, "f", string.format("%-14s (%d,%d)", (lc.name or "-"):sub(1, 14), lc.x, lc.y),
                  colx + 50, ly, 0, 0, clickable and 0x40E0E0 or (lc.name and C.label or C.dim))
@@ -1252,6 +1518,146 @@ local function draw_map(my, vmip)
     table.sort(u)
     txt(10, "unmapped terrain chars: " .. table.concat(u, " ") .. "  (tell Claude)", C.dim); nl(13)
   end
+end
+
+-- City Plan tab: 12x12 placement grid (inner CPT rows 4-15, cols 5-16), coloured by terrain /
+-- role, with a clickable building palette. Pick a building, then click a cell to place it.
+local function draw_plan(my, vmip)
+  local rows = {}
+  for i = 0, 19 do rows[i] = vmip["CPT" .. string.format("%02d", i)] end
+  local plan = split(vmip.CPLAN or "", "|")
+  cp_accumulate(vmip.CPB)                           -- catch a placement even if we only see it here
+  local placed = tonumber(plan[3]) or 0             -- CPLAN field 3 = total buildings placed
+  local allowed = plan[4] or "?"
+
+  -- placements are accumulated in cp_placed (the feed only sends the latest). Expand each
+  -- building's w x h footprint into pmap["row,col"] = { letter, name }; terrain stays in CPT.
+  local pmap, pcount = {}, {}
+  for _, b in pairs(cp_placed) do
+    pcount[b.letter] = (pcount[b.letter] or 0) + 1
+    for dr = 0, b.h - 1 do
+      for dc = 0, b.w - 1 do
+        pmap[(b.row + dr) .. "," .. (b.col + dc)] = { letter = b.letter, name = b.name }
+      end
+    end
+  end
+  local tracked = cp_count()
+
+  local hdr = string.format("Placed %d / %s", placed, allowed)
+  header("-- City Plan --")
+  txt(10, hdr, C.text)
+  local note = (tracked < placed)
+    and string.format("(%d tracked - others appear as you place them; 'vplan clear' to reset)", tracked)
+    or "(grows with rank)"
+  txt(10 + WindowTextWidth(WIN, "f", hdr) + 6, note, (tracked < placed) and C.warn or C.dim)
+  -- view-style toggle (top right): cycle text -> tiles -> icons
+  local tlbl = "view: " .. plan_style
+  local tx = W - WindowTextWidth(WIN, "f", tlbl) - 12
+  txt(tx, tlbl, C.head)
+  WindowAddHotspot(WIN, "plan_style", tx, ly, tx + WindowTextWidth(WIN, "f", tlbl), ly + 12,
+    "", "", "vik_plan_style", "", "", "Switch text / tiles view", 1, 0)
+  nl(15)
+
+  if not rows[4] then
+    txt(10, "no city-plan feed yet - enable it in-game / vtoggle mip_city", C.dim); nl()
+    return
+  end
+
+  -- selection line + Clear control
+  if plan_sel then
+    local b = PLAN_BY_L[plan_sel]
+    local s = "Selected: " .. plan_sel .. " " .. (b and b.name or "?")
+    txt(10, s, b and PLAN_ROLE[b.role] or C.text)
+    local cx = 10 + WindowTextWidth(WIN, "f", s) + 10
+    txt(cx, "[Clear]", C.warn)
+    WindowAddHotspot(WIN, "plan_clear", cx, ly, cx + WindowTextWidth(WIN, "f", "[Clear]"), ly + 12,
+      "", "", "vik_plan_clear", "", "", "Clear selection", 1, 0); nl(15)
+  else
+    txt(10, "Pick a building below, then click a grid cell to place it.", C.dim); nl(15)
+  end
+
+  -- grid: text = single glyphs (classic), tiles = filled cells, icons = pixel-art sprites
+  local icons = (plan_style == "icons")
+  local img_ok = icons and cp_load_image()
+  local tiles = (plan_style == "tiles") or icons        -- icons reuse the filled-tile layout
+  local gx0 = 34
+  local cw  = icons and 22 or (tiles and 17 or 14)
+  local chh = icons and 22 or (tiles and 16 or 13)
+  for c = 1, 12 do
+    WindowText(WIN, "f", tostring(c % 10), gx0 + (c - 1) * cw + math.floor(cw / 2) - 3, ly, 0, 0, C.dim)
+  end
+  local gy = ly + 12
+  if tiles then WindowRectOp(WIN, 1, gx0 - 1, gy - 1, gx0 + 12 * cw + 1, gy + 12 * chh + 1, C.border) end
+  for r = 0, 11 do
+    local rowstr = rows[r + 4] or ""
+    local rl = string.char(65 + r)
+    WindowText(WIN, "f", rl, 18, gy + (tiles and 3 or 0), 0, 0, C.label)
+    for c = 0, 11 do
+      local ch = rowstr:sub(5 + c, 5 + c)
+      local ter = PLAN_TERRAIN[ch]
+      local cx = gx0 + c * cw
+      local bld = pmap[r .. "," .. c]                       -- a placed building here?
+      local letter = bld and bld.letter
+      local bcol = letter and ((PLAN_BY_L[letter] and PLAN_ROLE[PLAN_BY_L[letter].role]) or 0xF0F0F0)
+      if tiles then
+        local fill, glyphcol
+        if letter then fill, glyphcol = 0x585048, bcol           -- building tile
+        elseif ter then fill, glyphcol = ter[3], ter[2]          -- terrain tile
+        else fill, glyphcol = 0x484848, 0xF0F0F0 end
+        WindowRectOp(WIN, 2, cx + 1, gy + 1, cx + cw - 1, gy + chh - 1, fill)
+        WindowRectOp(WIN, 1, cx, gy, cx + cw, gy + chh, 0x282828)
+        if letter then
+          local bi = PLAN_BY_L[letter] and PLAN_BY_L[letter].idx
+          if img_ok and bi then      -- blit the pixel-art sprite (its transparent bg lets the tile show)
+            local sx = (bi % PLAN_ICON_COLS) * 22
+            local sy = math.floor(bi / PLAN_ICON_COLS) * 22
+            WindowDrawImageAlpha(WIN, "cityicons", cx, gy, cx + cw, gy + chh, 1.0, sx, sy)
+          else
+            local w = WindowTextWidth(WIN, "fb", letter)
+            WindowText(WIN, "fb", letter, cx + math.floor((cw - w) / 2), gy + 2, 0, 0, glyphcol)
+          end
+        end
+      else
+        if letter then
+          WindowText(WIN, "fb", letter, cx + 4, gy, 0, 0, bcol)
+        else
+          local col = ter and ter[2] or 0xF0F0F0
+          local gc = ch
+          if ch == "H" then gc = "^" elseif ch == "w" then gc = "~" end
+          WindowText(WIN, "f", gc, cx + 4, gy, 0, 0, col)
+        end
+      end
+      local cell = rl .. tostring(c + 1)
+      WindowAddHotspot(WIN, "plancell_" .. cell, cx, gy, cx + cw, gy + chh,
+        "", "", "vik_plan_cell", "", "",
+        "Cell " .. cell .. (bld and (": " .. bld.name)
+          or (plan_sel and ("  ->  place " .. plan_sel) or "  (pick a building first)")), 1, 0)
+    end
+    gy = gy + chh
+  end
+  ly = gy + 4
+  txt(10, tiles and "woods green   hill blue-grey   river blue   plain dark   buildings = role-coloured"
+                 or "plain .   woods f   hill ^   river ~", C.dim); nl(15)
+
+  -- building palette: 3 columns, click to select
+  local cols, colw = 3, math.floor((W - 16) / 3)
+  local perc = math.ceil(#PLAN_BLD / cols)
+  local top = ly
+  for i, b in ipairs(PLAN_BLD) do
+    local ci = math.floor((i - 1) / perc)
+    local ri = (i - 1) % perc
+    local x = 8 + ci * colw
+    local y = top + ri * 13
+    local sel = (plan_sel == b[1])
+    local n = pcount[b[1]]
+    if n then WindowRectOp(WIN, 2, x, y + 3, x + 6, y + 9, 0x40E040) end   -- green mark = placed
+    local label = b[1] .. " " .. b[2] .. (n and n > 1 and (" x" .. n) or "")
+    WindowText(WIN, sel and "fb" or "f", label, x + 9, y, 0, 0, PLAN_ROLE[b[3]] or C.text)
+    WindowAddHotspot(WIN, "planpick_" .. i, x, y, x + colw - 4, y + 12,
+      "", "", "vik_plan_pick", "", "",
+      "Select " .. b[2] .. " (" .. b[1] .. ")" .. (n and ("  -  " .. n .. " placed") or ""), 1, 0)
+  end
+  ly = top + perc * 13
 end
 
 local function draw_feeds(my, vmip)
@@ -1410,11 +1816,13 @@ function vik_draw()
   if not windowinfo then
     windowinfo = movewindow.install(WIN, 6, 0)
   end
-  WindowCreate(WIN, windowinfo.window_left, windowinfo.window_top, W, H,
+  -- the icon-view city plan uses 22px tiles, so it needs a taller window than the default
+  local winH = (tab == "Plan" and plan_style == "icons") and 624 or H
+  WindowCreate(WIN, windowinfo.window_left, windowinfo.window_top, W, winH,
                windowinfo.window_mode, windowinfo.window_flags, C.bg)
   WindowFont(WIN, "f",  "Lucida Console", 9, false, false, false, false)
   WindowFont(WIN, "fb", "Lucida Console", 9, true,  false, false, false)
-  WindowRectOp(WIN, 1, 0, 0, W, H, C.border)
+  WindowRectOp(WIN, 1, 0, 0, W, winH, C.border)
   -- title bar (drag)
   WindowRectOp(WIN, 2, 1, 1, W - 1, 18, C.title)
   WindowText(WIN, "fb", "Viking Status", math.floor(W / 2) - 45, 3, 0, 0, C.head)
@@ -1445,6 +1853,7 @@ function vik_draw()
   elseif tab == "Sea"    then draw_sea(my, vmip)
   elseif tab == "Voyage" then draw_voyage(my, vmip)
   elseif tab == "Map"    then draw_map(my, vmip)
+  elseif tab == "Plan"   then draw_plan(my, vmip)
   elseif tab == "Mission" then draw_mission(my, vmip)
   elseif tab == "Feeds"  then draw_feeds(my, vmip)
   end
@@ -1455,6 +1864,30 @@ function vik_tabclick(flags, id)
   tab = id:sub(5)
   SetVariable("tab", tab)
   vik_draw()
+end
+
+-- City Plan: pick a building from the palette, click a cell to place it
+function vik_plan_pick(flags, id)
+  local idx = tonumber(id:match("^planpick_(%d+)$"))
+  if idx and PLAN_BLD[idx] then plan_sel = PLAN_BLD[idx][1]; vik_draw() end
+end
+function vik_plan_clear() plan_sel = nil; vik_draw() end
+function vik_plan_reset()   -- forget tracked placements (they'll re-learn as you place)
+  cp_placed = {}; cp_save()
+  ColourNote("cyan", "", "[plan] tracked placements cleared")
+  vik_draw()
+end
+function vik_plan_style()
+  plan_style = (plan_style == "text") and "tiles" or (plan_style == "tiles") and "icons" or "text"
+  SetVariable("plan_style", plan_style)
+  vik_draw()
+end
+function vik_plan_cell(flags, id)
+  local cell = id:match("^plancell_(%w+)$")
+  if not cell then return end
+  if not plan_sel then Note("[plan] pick a building first, then click a cell"); return end
+  Send("vplan place " .. plan_sel .. " " .. cell)
+  Note("[plan] vplan place " .. plan_sel .. " " .. cell)
 end
 
 function vik_settab(name)
@@ -1489,10 +1922,205 @@ function vik_toggle()
   Note("[viking] window " .. (visible and "shown" or "hidden"))
 end
 
+-- one pass of the auto sea-nav, called on every feed update
+function sea_nav_tick()
+  if not sea_nav.on then return end
+  if not IsConnected() then return end
+  local _, vmip = getvars()
+  local vy = split(vmip.VOYAGE or "", "|")
+  if #vy < 10 then                                    -- no active voyage
+    sea_nav.had_voyage = false                        -- the next one starts on a fresh chart
+    return
+  end
+  -- Every voyage gets a brand-new chart, so toured coords never carry over. Reset when the
+  -- voyage name changes AND whenever a voyage starts (names can repeat between voyages).
+  local vid = vy[4] or ""
+  if vid ~= sea_nav.voyage or not sea_nav.had_voyage then
+    sea_nav.voyage = vid; sea_nav.visited = {}; sea_nav.target = nil; sea_nav.original = nil
+  end
+  sea_nav.had_voyage = true
+  local feats, ship = sea_chart_scan(vmip)
+  if not ship then return end                         -- can't locate our ship on the chart yet
+
+  local has_node = (vmip.VRESOLVE or "") ~= ""
+
+  -- auto-resolve the current node per preference; returns true if it held/handled the node.
+  -- Options moved from VRESOLVE (now just the node TYPE, e.g. "prompt_shadow") to VOFFERS
+  -- (e.g. "hunt,evade"); read VOFFERS first and fall back to VRESOLVE for older feeds.
+  local function try_resolve()
+    if not has_node then return end
+    if sea_nav.resolve == "" or sea_nav.resolve == "off" then return end   -- manual: hold
+    if (os.time() - (sea_nav.last_cmd_at or 0)) < 3 then return end
+    local optsrc = ((vmip.VOFFERS or "") ~= "") and vmip.VOFFERS or vmip.VRESOLVE
+    local opts = split(optsrc or "", ",")
+    local offered = {}
+    for _, o in ipairs(opts) do offered[o:gsub("%s", "")] = true end
+    -- voyage metrics a preference entry can test, e.g. "resupply?supplies<50"
+    local vy2 = split(vmip.VOYAGE or "", "|")
+    local metric = { hull = num(vy2[11]), morale = num(vy2[12]), supplies = num(vy2[13]), stress = num(vy2[14]) }
+    local function cond_ok(c)
+      if not c or c == "" then return true end
+      local m, op, n = c:match("^(%a+)([<>]=?)(%d+)$")
+      if not m then return true end
+      local val = metric[m:lower()]; if not val then return true end
+      n = tonumber(n)
+      if op == "<"  then return val <  n
+      elseif op == ">"  then return val >  n
+      elseif op == "<=" then return val <= n
+      elseif op == ">=" then return val >= n end
+      return true
+    end
+    local pick
+    if sea_nav.resolve == "first" then
+      pick = opts[1] and opts[1]:gsub("%s", "")
+    else
+      for entry in sea_nav.resolve:gmatch("[^,]+") do
+        local kw, cond = entry:match("^%s*([^?%s]+)%s*%??%s*(.-)%s*$")
+        if kw and offered[kw] and cond_ok(cond) then pick = kw; break end
+      end
+      -- no match -> hold for manual (safer than guessing)
+    end
+    if pick and pick ~= "" then
+      sea_nav.last_cmd_at = os.time()
+      Send("vvoyage resolve " .. pick)
+      ColourNote("cyan", "", "[sea-nav] auto-resolving node with '" .. pick .. "'")
+    end
+  end
+
+  -- == ACTIVE TARGET: hold course until we actually arrive ==
+  -- The chart draws our queued course over the map (path '+', destination '>'), so once we
+  -- queue an island its '>' marker HIDES the 'I' from the scan. If we re-scanned every tick we
+  -- would see "no features", resume the original course (clearing the marker), the island would
+  -- reappear, and we'd divert again -- an endless island<->course ping-pong. So while a target is
+  -- set we do NOT re-scan or resume; we just wait for arrival (position or the queue emptying).
+  if sea_nav.target then
+    local t = sea_nav.target
+    local dest = vqpath_dest(vmip.VQPATH)
+    if dest == t.coord then sea_nav.enroute = true end          -- confirmed our course leads there
+    local onit = (ship.r == t.r and ship.c == t.c)
+    local adj  = (math.abs(ship.r - t.r) <= 1 and math.abs(ship.c - t.c) <= 1)
+    -- arrived when we stand on it, OR a node popped while we're right next to it (islands/wrecks
+    -- stop the ship adjacent), OR our confirmed course was consumed (queue emptied = we got there)
+    local arrived = onit or (has_node and adj) or (sea_nav.enroute and dest == nil)
+    if arrived then
+      sea_nav.visited[t.coord] = true
+      sea_nav.target = nil
+      sea_nav.enroute = false
+      -- fall through: resolve the node we just reached / pick the next feature
+    else
+      try_resolve()   -- a mid-sail encounter can still pop while we sail; handle it, keep course
+      return
+    end
+  end
+
+  -- == AT A NODE with no active target: resolve it (or hold for manual) ==
+  if has_node then
+    try_resolve()
+    return
+  end
+
+  -- == FREE TO PICK: nearest unvisited feature ==
+  local best, bd
+  for _, f in ipairs(feats) do
+    if not sea_nav.visited[f.coord] then
+      local d = (f.r - ship.r) ^ 2 + (f.c - ship.c) ^ 2
+      if not bd or d < bd then best, bd = f, d end
+    end
+  end
+  if not best then                                    -- nothing left to tour
+    -- everything in sight is toured: resume the course we diverted from, if any
+    if sea_nav.original and not sea_nav.visited[sea_nav.original]
+       and (os.time() - (sea_nav.last_cmd_at or 0)) >= 2 then
+      local orig = sea_nav.original
+      sea_nav.original = nil
+      sea_nav.last_cmd_at = os.time()
+      Send("vvoyage clear")
+      Send("vvoyage queue " .. orig)
+      ColourNote("cyan", "", "[sea-nav] all features toured - resuming original course to " .. orig)
+    end
+    return
+  end
+  -- divert to the chosen feature (throttled). target is nil here, so this only fires once per pick.
+  if (os.time() - (sea_nav.last_cmd_at or 0)) >= 2 then
+    -- first time we take over: remember the course the player had queued, to resume later
+    if not sea_nav.original then
+      local od = vqpath_dest(vmip.VQPATH)
+      if od and od ~= best.coord then sea_nav.original = od end
+    end
+    sea_nav.target = { coord = best.coord, r = best.r, c = best.c }
+    sea_nav.enroute = false
+    sea_nav.last_cmd_at = os.time()
+    Send("vvoyage clear")
+    Send("vvoyage queue " .. best.coord)
+    ColourNote("cyan", "", "[sea-nav] course set to " .. best.sym .. " at " .. best.coord)
+  end
+end
+
+function sea_nav_set(s)
+  sea_nav.on = (s == "on")
+  SetVariable("seanav", sea_nav.on and "1" or "0")
+  ColourNote("cyan", "", "[sea-nav] auto-navigation " .. (sea_nav.on and "ON" or "OFF"))
+  if sea_nav.on then sea_nav_tick() end
+  vik_draw()
+end
+
+-- clear the toured list for the current voyage (re-consider every feature on the chart)
+function sea_nav_reset()
+  sea_nav.visited = {}; sea_nav.target = nil; sea_nav.original = nil
+  ColourNote("cyan", "", "[sea-nav] toured list cleared - all charted features are candidates again")
+  sea_nav_tick()
+  vik_draw()
+end
+
+-- set the auto-resolve preference: "off" (hold for manual), "first", or a keyword list like "salvage,press"
+function sea_nav_resolve_set(s)
+  s = (s or ""):gsub("^%s*(.-)%s*$", "%1")
+  sea_nav.resolve = (s == "off") and "" or s
+  SetVariable("seanav_resolve", sea_nav.resolve)
+  ColourNote("cyan", "", "[sea-nav] auto-resolve " ..
+    (sea_nav.resolve == "" and "OFF (hold at nodes, you resolve)" or ("preference: " .. sea_nav.resolve)))
+  vik_draw()
+end
+
 function OnPluginBroadcast(msg, id, name, text)
-  -- Map tab is not redrawn on every feed update (real-time grid redraws lagged the client);
+  if id ~= MIP_ID then return end
+  local _, vmip = getvars()
+  cp_accumulate(vmip.CPB)                                   -- remember city-plan placements as they happen
+  local realn = tonumber((split(vmip.CPLAN or "", "|"))[3]) or 0
+  if realn < cp_count() then                               -- a building was removed: our list is stale, resync
+    cp_placed = {}; cp_accumulate(vmip.CPB); cp_save()
+  end
+  sea_nav_tick()
+  -- Map tab isn't redrawn on every feed update (real-time grid redraws lagged the client);
   -- it refreshes when you click onto it. Other tabs update live as before.
-  if id == MIP_ID and tab ~= "Map" then vik_draw() end
+  if tab ~= "Map" then vik_draw() end
+end
+
+-- Modrsokn cooldown: fired by the trigger when the ability is used
+function mordsokn_used()
+  mordsokn_at = os.time()
+  SetVariable("mordsokn_at", tostring(mordsokn_at))
+  ColourNote("orange", "", "[Modrsokn] used - 3:00 cooldown")
+  mordsokn_start_tick()
+end
+
+-- self-rescheduling 1s repaint so the Stats-tab countdown ticks smoothly, stops when ready
+function mordsokn_start_tick()
+  if mordsokn_ticking then return end
+  mordsokn_ticking = true
+  mordsokn_tick()
+end
+
+function mordsokn_tick()
+  local left = MORDSOKN_CD - (os.time() - mordsokn_at)
+  if visible and tab == "Stats" then vik_draw() end
+  if left > 0 then
+    DoAfterSpecial(1, "mordsokn_tick()", 12)
+  else
+    mordsokn_ticking = false
+    ColourNote("lime", "", "[Modrsokn] ready")
+    if visible and tab == "Stats" then vik_draw() end
+  end
 end
 
 function vik_tick(state)
@@ -1515,6 +2143,7 @@ end
 function OnPluginInstall()
   AddTimer("viking_keepalive", 0, 5, 0, "l", timer_flag.Replace, "")
   if GetVariable("tick") == "1" then EnableTimer("viking_keepalive", true) end
+  if os.time() - mordsokn_at < MORDSOKN_CD then mordsokn_start_tick() end   -- resume a live cooldown
   vik_draw()
 end
 

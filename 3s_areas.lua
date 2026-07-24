@@ -280,4 +280,13 @@ areas = {
       ["Wheatfeld the Farming Hippie."] = { kill = "hippie" },
     },
   },
+  megacity = {
+    path = { "w", "w", "w", "n", "n", "n", "e", "e", "e", "e", "e", "e", "s", "s", "s", "w", "w", "w", "s", "s", "s", "s", "s", "s", "s", "s", "s", "s", "w", "n", "n", "n", "n", "n", "n", "n", "n", "n", "n", "w", "s", "s", "s", "s", "s", "s", "s", "s", "s", "s", "w", "n", "n", "n", "n", "n", "n", "n", "n", "n", "n", "e", "e", "e" },
+    no_loop = 0, no_home = 1, hardmode = 0,
+    mobs = {
+      ["Neon Fang."] = { kill = "human" },
+      ["The Hollow man."] = { kill = "human" },
+      ["Wiremouth guard."] = { kill = "human" },
+    },
+  },
 }

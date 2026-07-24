@@ -17,8 +17,8 @@ window keeps its position when switching. `areabot` opens it on Area,
 
 **Everything is clickable** in the Area tab (`areabot` shows/hides
 it): click an area name to start, then Walk / Pause / Stop / Resume / Kill.
-The toggle buttons AutoR (auto-resume), Hard (hard mobs)
-and Loot light up when on. A progress bar tracks your position on the path,
+The toggle buttons AutoR (auto-resume) and Hard (hard mobs)
+light up when on. A progress bar tracks your position on the path,
 and the banner shows WALKING / FIGHTING / stopped. Hover anything for help.
 
 | Command | What it does |
@@ -32,13 +32,14 @@ and the banner shows WALKING / FIGHTING / stopped. Hover anything for help.
 | `.dcr` | Resume after a disconnect |
 | `.stack <n>` | Stack up to n mobs on the next move |
 | `killbot` | Kill the bot completely |
-| `v on` / `v off` | Vacuum looting on/off |
 | `pa <name>` / `pr <name>` | Party add/remove (party members don't trigger player-skip) |
 | *(automatic)* | Showing the in-game party table captures the member list by itself - members who left are dropped. `pa` is only needed for disguised characters. One list serves both bots. |
 | `.set autoresume on\|off` | Auto-resume walking on "There is no X here." |
 | `.set hardmode on\|off` | Also engage 'hard' mobs (e.g. Otyg in afield) |
-| `.set stackit\|bagit\|necbagit\|bardit on\|off` | Loot styles |
 | `.binfo` | Help |
+
+Looting is handled separately by the **Loot** plugin (see its section below) so
+it works whether or not a bot is driving.
 
 **Recording a new area** - walk it once, the bot writes the file:
 
@@ -75,8 +76,8 @@ Map: green = you, blue outline = unexplored, blue dot = down exit.
 **Normal session, buttons only:** walk to your entry room, click **Reset**,
 click **ON**, click **Auto**. The banner shows what the bot is doing
 (READY / AUTO-EXPLORING / WALKING / FIGHTING / PAUSED / OFF). **Pause**
-holds everything mid-run - click again to continue. **Loot** toggles
-looting, **- / +** adjust the pause after kills, **Leave** walks home,
+holds everything mid-run - click again to continue. **- / +** adjust the
+pause after kills, **Leave** walks home,
 **X** hides the window (`cs win` brings it back). Hover any button for a
 tooltip. Don't walk manually while ON (it desyncs - see `cs set`).
 
@@ -93,7 +94,6 @@ tooltip. Don't walk manually while ON (it desyncs - see `cs set`).
 | `cs goal <words>` | Stop when any goal item is seen (default: cask portal; cask also gets opened). Goal re-arms every `cs auto on`. |
 | `cs delay <secs>` | Pause after killing blows before moving on (default 2.5s) |
 | `cs rest <seid> [secs]` | Rest when Seid drops below the threshold (60s rounds until recovered; 0 = off) |
-| `cs vacuum on\|off` | Loot rooms (default on) |
 | `cs set <x> <y> <z>` | Correct the bot's position after a desync |
 | `cs find <x> <y> <z>` | Print the path to a coordinate |
 | `cs win` | Show/hide the map window |
@@ -105,10 +105,37 @@ and the area bot stops with its position saved ('.resume' after walking
 back). The room you fled into is never added to the map.
 
 Built-in behaviour: **down exits always have priority** (dives immediately);
-up exits are used for backtracking but never explored; won't move while the
-MIP feed shows an enemy; after a kill it re-checks the room (`kill mutant`)
-and only walks on at "There is no mutant here."; stops + opens when the
-goal item (cask) is in the room. Map survives restarts.
+**up exits are never taken while exploring** (so it can't climb back onto a
+cleared floor) - only `cs leave` will go up; won't move while the MIP feed
+shows an enemy; after a kill it re-checks the room and only walks on once it's
+clear; **pauses** at the goal item (cask) rather than opening it. Map survives
+restarts.
+
+---
+
+## Post-kill Loot  (ThreeS_Loot)
+
+Runs a list of commands after every killing blow - works whether or not a bot
+is driving (the bots no longer loot themselves).
+
+Profiles are kept in a plain file, **`3s_loot.lua`** (next to the plugins,
+auto-created with examples on first run). Edit it in any text editor:
+
+    loot_profiles = {
+      greedy = { "get all from corpse", "get coins", "sac corpse" },
+      coins  = { "get coins" },
+    }
+
+The window is just a picker: a button per profile (click to make it active),
+an **Off** button, and **Reload**. It also shows what the active profile runs.
+
+| Command | What it does |
+|---|---|
+| `loot` | Show/hide the window |
+| `loot use <name>` | Make a profile active |
+| `loot off` | Stop running any profile |
+| `loot reload` | Re-read `3s_loot.lua` after editing it |
+| `loot list` | Print the profiles found in the file |
 
 ---
 
